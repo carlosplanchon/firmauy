@@ -208,3 +208,6 @@ __marimo__/
 
 # Local SoftHSM dev token (scripts/dev-softhsm-setup.sh)
 .softhsm/
+
+# Clipboard:
+clipboard/

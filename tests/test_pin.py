@@ -1,3 +1,5 @@
+import io
+
 import pytest
 import typer
 
@@ -23,3 +25,17 @@ class TestGetPinFd:
     def test_raises_if_fd_not_provided(self):
         with pytest.raises(typer.BadParameter):
             get_pin(PinSource.fd, env_var=None, fd=None)
+
+
+class TestGetPinStdin:
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("1234\n", "1234"),       # unix newline
+            ("1234\r\n", "1234"),     # windows CRLF
+            ("1234", "1234"),         # no trailing newline
+        ],
+    )
+    def test_strips_trailing_newlines(self, monkeypatch, raw, expected):
+        monkeypatch.setattr("sys.stdin", io.StringIO(raw))
+        assert get_pin(PinSource.stdin, env_var=None, fd=None) == expected

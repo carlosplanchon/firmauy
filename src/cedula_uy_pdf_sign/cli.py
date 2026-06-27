@@ -5,7 +5,7 @@
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Annotated, List, Optional
 from zoneinfo import ZoneInfo
 
 import pkcs11
@@ -55,8 +55,62 @@ app = typer.Typer(
 
 
 # ---------------------------------------------------------------------------
-# Internal helper
+# Shared CLI option types (reused by `sign` and `sign-batch`)
 # ---------------------------------------------------------------------------
+
+Pkcs11LibOpt = Annotated[str, typer.Option("--pkcs11-lib", help="Path to the PKCS#11 module.")]
+TokenLabelOpt = Annotated[Optional[str], typer.Option("--token-label", help="Exact PKCS#11 token label. If not provided, auto-detected.")]
+CertIdOpt = Annotated[Optional[str], typer.Option("--cert-id", help="Hexadecimal ID of the PKCS#11 certificate/key. If not provided, auto-detected.")]
+PinSourceOpt = Annotated[PinSource, typer.Option("--pin-source", help="How to obtain the PIN: prompt (default), env, stdin, fd.")]
+PinEnvVarOpt = Annotated[Optional[str], typer.Option("--pin-env-var", help="Environment variable holding the PIN (requires --pin-source env).")]
+PinFdOpt = Annotated[Optional[int], typer.Option("--pin-fd", help="File descriptor holding the PIN (requires --pin-source fd).")]
+FieldNameOpt = Annotated[str, typer.Option("--field-name", help="Signature field name.")]
+PageOpt = Annotated[int, typer.Option("--page", help="Page where the visible signature is placed. -1 = last page.")]
+X1Opt = Annotated[int, typer.Option("--x1", help="X1 coordinate of the signature box.")]
+Y1Opt = Annotated[int, typer.Option("--y1", help="Y1 coordinate of the signature box.")]
+X2Opt = Annotated[int, typer.Option("--x2", help="X2 coordinate of the signature box.")]
+Y2Opt = Annotated[int, typer.Option("--y2", help="Y2 coordinate of the signature box.")]
+TimezoneOpt = Annotated[str, typer.Option("--timezone", help="Timezone for the visible timestamp.")]
+ReasonOpt = Annotated[Optional[str], typer.Option("--reason", help="Reason for signing.")]
+LocationOpt = Annotated[Optional[str], typer.Option("--location", help="Location of signing.")]
+ContactInfoOpt = Annotated[Optional[str], typer.Option("--contact-info", help="Signer contact information.")]
+TsaUrlOpt = Annotated[
+    Optional[str],
+    typer.Option(
+        "--tsa-url",
+        help=(
+            "URL of a Time Stamping Authority (TSA). Embeds independent, "
+            "trusted-time evidence in the signature. Optional: the Uruguayan "
+            "cédula signing flow does not require it."
+        ),
+    ),
+]
+OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriting existing output file(s).")]
+ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _print_signing_info(
+    *,
+    token_label_display: str,
+    signer_name: str,
+    issuer_name: str,
+    key_id: bytes,
+    cert_serial: str,
+    tsa_url: Optional[str],
+) -> None:
+    """Print the aligned signer/token summary shared by `sign` and `sign-batch`."""
+    typer.echo(f"Token:               {token_label_display}")
+    typer.echo(f"Signer:              {signer_name}")
+    typer.echo(f"Issuer:              {issuer_name}")
+    typer.echo(f"PKCS#11 ID:          {key_id.hex()}")
+    typer.echo(f"Certificate serial:  {cert_serial}")
+    if tsa_url:
+        typer.echo(f"TSA:                 {tsa_url}")
+
 
 def _sign_one_pdf(
     *,
@@ -276,59 +330,25 @@ def list_certs(
 def sign(
     input_pdf: Path = typer.Argument(..., exists=True, readable=True, help="Input PDF."),
     output_pdf: Optional[Path] = typer.Argument(None, help="Signed output PDF. Default: <input>_firmado.pdf"),
-    pkcs11_lib: str = typer.Option(
-        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
-    ),
-    token_label: Optional[str] = typer.Option(
-        None, "--token-label",
-        help="Exact PKCS#11 token label. If not provided, auto-detected.",
-    ),
-    cert_id: Optional[str] = typer.Option(
-        None, "--cert-id",
-        help="Hexadecimal ID of the PKCS#11 certificate/key. If not provided, auto-detected.",
-    ),
-    pin_source: PinSource = typer.Option(
-        PinSource.prompt, "--pin-source",
-        help="How to obtain the PIN: prompt (default), env, stdin, fd.",
-    ),
-    pin_env_var: Optional[str] = typer.Option(
-        None, "--pin-env-var",
-        help="Environment variable holding the PIN (requires --pin-source env).",
-    ),
-    pin_fd: Optional[int] = typer.Option(
-        None, "--pin-fd",
-        help="File descriptor holding the PIN (requires --pin-source fd).",
-    ),
-    field_name: str = typer.Option(
-        "Sig1", "--field-name", help="Signature field name.",
-    ),
-    page: int = typer.Option(
-        -1, "--page",
-        help="Page where the visible signature is placed. -1 = last page.",
-    ),
-    x1: int = typer.Option(DEFAULT_X1, "--x1", help="X1 coordinate of the signature box."),
-    y1: int = typer.Option(DEFAULT_Y1, "--y1", help="Y1 coordinate of the signature box."),
-    x2: int = typer.Option(DEFAULT_X2, "--x2", help="X2 coordinate of the signature box."),
-    y2: int = typer.Option(DEFAULT_Y2, "--y2", help="Y2 coordinate of the signature box."),
-    timezone: str = typer.Option(
-        DEFAULT_TIMEZONE, "--timezone", help="Timezone for the visible timestamp.",
-    ),
-    reason: Optional[str] = typer.Option(None, "--reason", help="Reason for signing."),
-    location: Optional[str] = typer.Option(None, "--location", help="Location of signing."),
-    contact_info: Optional[str] = typer.Option(
-        None, "--contact-info", help="Signer contact information.",
-    ),
-    tsa_url: Optional[str] = typer.Option(
-        None, "--tsa-url",
-        help="URL of the Time Stamping Authority (TSA). Helps preserve temporal evidence of the signature. Not applicable for Uruguayan cédula signatures.",
-    ),
-    overwrite: bool = typer.Option(
-        False, "--overwrite", help="Allow overwriting the output file if it already exists.",
-    ),
-    force: bool = typer.Option(
-        False, "--force",
-        help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).",
-    ),
+    pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
+    token_label: TokenLabelOpt = None,
+    cert_id: CertIdOpt = None,
+    pin_source: PinSourceOpt = PinSource.prompt,
+    pin_env_var: PinEnvVarOpt = None,
+    pin_fd: PinFdOpt = None,
+    field_name: FieldNameOpt = "Sig1",
+    page: PageOpt = -1,
+    x1: X1Opt = DEFAULT_X1,
+    y1: Y1Opt = DEFAULT_Y1,
+    x2: X2Opt = DEFAULT_X2,
+    y2: Y2Opt = DEFAULT_Y2,
+    timezone: TimezoneOpt = DEFAULT_TIMEZONE,
+    reason: ReasonOpt = None,
+    location: LocationOpt = None,
+    contact_info: ContactInfoOpt = None,
+    tsa_url: TsaUrlOpt = None,
+    overwrite: OverwriteOpt = False,
+    force: ForceOpt = False,
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
     if output_pdf is None:
@@ -341,13 +361,14 @@ def sign(
                 "Specify a different output path."
             )
 
+        # Fail-fast before prompting for the PIN. _sign_one_pdf re-checks this
+        # right before writing (the authoritative guard, also used by sign-batch);
+        # here it only avoids asking for the PIN when we already know we'd refuse.
         if output_pdf.exists() and not overwrite:
             raise RuntimeError(
                 f"Output file already exists: {output_pdf}\n"
                 "Use --overwrite to overwrite it."
             )
-
-        ensure_output_parent(output_pdf)
 
         if x2 <= x1 or y2 <= y1:
             raise typer.BadParameter(
@@ -378,13 +399,14 @@ def sign(
             cert_serial = format(cert.serial_number, "X")
 
             token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
-            typer.echo(f"Token:               {token_label_display}")
-            typer.echo(f"Signer:              {signer_name}")
-            typer.echo(f"Issuer:              {issuer_name}")
-            typer.echo(f"PKCS#11 ID:          {key_id.hex()}")
-            typer.echo(f"Certificate serial:  {cert_serial}")
-            if tsa_url:
-                typer.echo(f"TSA:               {tsa_url}")
+            _print_signing_info(
+                token_label_display=token_label_display,
+                signer_name=signer_name,
+                issuer_name=issuer_name,
+                key_id=key_id,
+                cert_serial=cert_serial,
+                tsa_url=tsa_url,
+            )
 
             pkcs11_signer = PKCS11Signer(
                 pkcs11_session=session,
@@ -446,59 +468,25 @@ def sign_batch(
         False, "--recursive",
         help="Recursively search for PDFs in --input-dir.",
     ),
-    pkcs11_lib: str = typer.Option(
-        DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
-    ),
-    token_label: Optional[str] = typer.Option(
-        None, "--token-label",
-        help="Exact PKCS#11 token label. If not provided, auto-detected.",
-    ),
-    cert_id: Optional[str] = typer.Option(
-        None, "--cert-id",
-        help="Hexadecimal ID of the PKCS#11 certificate/key. If not provided, auto-detected.",
-    ),
-    pin_source: PinSource = typer.Option(
-        PinSource.prompt, "--pin-source",
-        help="How to obtain the PIN: prompt (default), env, stdin, fd.",
-    ),
-    pin_env_var: Optional[str] = typer.Option(
-        None, "--pin-env-var",
-        help="Environment variable holding the PIN (requires --pin-source env).",
-    ),
-    pin_fd: Optional[int] = typer.Option(
-        None, "--pin-fd",
-        help="File descriptor holding the PIN (requires --pin-source fd).",
-    ),
-    field_name: str = typer.Option(
-        "Sig1", "--field-name", help="Signature field name.",
-    ),
-    page: int = typer.Option(
-        -1, "--page",
-        help="Page where the visible signature is placed. -1 = last page.",
-    ),
-    x1: int = typer.Option(DEFAULT_X1, "--x1", help="X1 coordinate of the signature box."),
-    y1: int = typer.Option(DEFAULT_Y1, "--y1", help="Y1 coordinate of the signature box."),
-    x2: int = typer.Option(DEFAULT_X2, "--x2", help="X2 coordinate of the signature box."),
-    y2: int = typer.Option(DEFAULT_Y2, "--y2", help="Y2 coordinate of the signature box."),
-    timezone: str = typer.Option(
-        DEFAULT_TIMEZONE, "--timezone", help="Timezone for the visible timestamp.",
-    ),
-    reason: Optional[str] = typer.Option(None, "--reason", help="Reason for signing."),
-    location: Optional[str] = typer.Option(None, "--location", help="Location of signing."),
-    contact_info: Optional[str] = typer.Option(
-        None, "--contact-info", help="Signer contact information.",
-    ),
-    tsa_url: Optional[str] = typer.Option(
-        None, "--tsa-url",
-        help="URL of the Time Stamping Authority (TSA). Not applicable for Uruguayan cédula signatures.",
-    ),
-    overwrite: bool = typer.Option(
-        False, "--overwrite", help="Allow overwriting output files if they already exist.",
-    ),
-    force: bool = typer.Option(
-        False, "--force",
-        help="Continue even if the signature field already contains a signature.",
-    ),
+    pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
+    token_label: TokenLabelOpt = None,
+    cert_id: CertIdOpt = None,
+    pin_source: PinSourceOpt = PinSource.prompt,
+    pin_env_var: PinEnvVarOpt = None,
+    pin_fd: PinFdOpt = None,
+    field_name: FieldNameOpt = "Sig1",
+    page: PageOpt = -1,
+    x1: X1Opt = DEFAULT_X1,
+    y1: Y1Opt = DEFAULT_Y1,
+    x2: X2Opt = DEFAULT_X2,
+    y2: Y2Opt = DEFAULT_Y2,
+    timezone: TimezoneOpt = DEFAULT_TIMEZONE,
+    reason: ReasonOpt = None,
+    location: LocationOpt = None,
+    contact_info: ContactInfoOpt = None,
+    tsa_url: TsaUrlOpt = None,
+    overwrite: OverwriteOpt = False,
+    force: ForceOpt = False,
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
@@ -560,13 +548,14 @@ def sign_batch(
             cert_serial = format(cert.serial_number, "X")
 
             token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
-            typer.echo(f"Token:               {token_label_display}")
-            typer.echo(f"Signer:              {signer_name}")
-            typer.echo(f"Issuer:              {issuer_name}")
-            typer.echo(f"PKCS#11 ID:          {key_id.hex()}")
-            typer.echo(f"Certificate serial:  {cert_serial}")
-            if tsa_url:
-                typer.echo(f"TSA:                 {tsa_url}")
+            _print_signing_info(
+                token_label_display=token_label_display,
+                signer_name=signer_name,
+                issuer_name=issuer_name,
+                key_id=key_id,
+                cert_serial=cert_serial,
+                tsa_url=tsa_url,
+            )
             typer.echo(f"Files to sign:       {len(input_pdfs)}")
             typer.echo("")
 

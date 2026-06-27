@@ -34,10 +34,10 @@ def get_pin(source: PinSource, env_var: Optional[str], fd: Optional[int]) -> str
         return val
     elif source == PinSource.stdin:
         typer.echo("Reading PIN from stdin...", err=True)
-        return sys.stdin.readline().rstrip("\n")
+        return sys.stdin.readline().rstrip("\r\n")
     elif source == PinSource.fd:
         if fd is None:
             raise typer.BadParameter("--pin-source fd requires --pin-fd")
         with os.fdopen(fd, closefd=False) as f:
-            return f.readline().rstrip("\n")
+            return f.readline().rstrip("\r\n")
     raise AssertionError(f"Unhandled PinSource: {source}")

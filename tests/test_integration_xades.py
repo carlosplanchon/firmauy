@@ -151,6 +151,38 @@ def test_sign_xml_produces_valid_xades(softhsm_token, tmp_path):
     assert len(refs) == 2
 
 
+def test_verify_xml_integrity_and_tamper(softhsm_token, tmp_path):
+    module, env, cert = softhsm_token
+
+    input_xml = tmp_path / "doc.xml"
+    input_xml.write_bytes(
+        b'<?xml version="1.0" encoding="UTF-8"?>'
+        b'<Doc xmlns="http://example.uy/test"><n>1</n></Doc>'
+    )
+    output_xml = tmp_path / "signed.xml"
+    proc = subprocess.run(
+        [sys.executable, "-m", "cedula_uy_pdf_sign", "sign-xml",
+         str(input_xml), str(output_xml),
+         "--pkcs11-lib", module, "--token-label", TOKEN_LABEL, "--pin-source", "stdin"],
+        env=env, input=PIN + "\n", capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    from cedula_uy_pdf_sign.xml_verify import verify_xml
+
+    signed = output_xml.read_bytes()
+    # Integrity holds; without trust anchors the chain is not evaluated -> INDETERMINATE.
+    res = verify_xml(signed, trust_roots=None)
+    assert res.indication == "INDETERMINATE"
+    assert all(c.ok for c in res.checks), [(c.name, c.detail) for c in res.checks if not c.ok]
+
+    # Tampering the signed document body breaks the reference digest -> INVALID.
+    tampered = signed.replace(b"<n>1</n>", b"<n>2</n>", 1)
+    assert tampered != signed
+    res_bad = verify_xml(tampered, trust_roots=None)
+    assert res_bad.indication == "INVALID"
+
+
 def test_sign_xml_batch_signs_all(softhsm_token, tmp_path):
     module, env, cert = softhsm_token
 

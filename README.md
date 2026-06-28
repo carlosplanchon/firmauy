@@ -30,6 +30,7 @@ The CLI tool is invoked as `firmauy` and supports:
 - signing individual PDF documents
 - batch-signing multiple PDFs with a single PKCS#11 session
 - signing XML documents, individually or in batch (XAdES-BES, enveloped)
+- verifying signed PDF and XML documents locally, with chain validation to the national root
 - configuring the visible signature position
 - selecting the signature page
 - discovering available PKCS#11 tokens and certificates
@@ -266,6 +267,99 @@ output directory is created automatically. All the `sign-xml` options (token, ce
 PIN selection, `--timezone`, `--overwrite`) also apply.
 
 Make sure you have reviewed all documents before signing them in batch.
+
+### Verify a signed XML
+
+Verify a signed XAdES XML locally: signature integrity plus, when trust anchors are available,
+the certificate chain up to the Uruguayan national root. No smart card is needed to verify.
+
+This project does **not** redistribute the state CA certificates. To enable chain validation,
+fetch them once from their official sources (the national root is checked against a pinned
+fingerprint and cached locally), or supply your own with `--ca-file`:
+
+```bash
+# Cache the national CAs from their official sources (one time)
+firmauy fetch-cas
+
+# Verify (integrity + chain to the national root, using the cached CAs)
+firmauy verify-xml signed.xml
+
+# Only check signature integrity, skip the certificate chain
+firmauy verify-xml signed.xml --no-trust
+
+# Use your own trust anchors instead (PEM bundle: root + intermediates)
+firmauy verify-xml signed.xml --ca-file my-cas.pem
+
+# Also check certificate revocation via CRL/OCSP (needs network)
+firmauy verify-xml signed.xml --check-revocation
+```
+
+Without cached CAs or `--ca-file`, verification falls back to signature integrity only (level 1).
+
+It reports a per-check breakdown and an overall indication:
+
+- **VALID** integrity holds and the chain is trusted up to the national root.
+- **INDETERMINATE** the signature is intact, but the chain is not trusted (e.g. an unknown
+  issuer) or trust was skipped with `--no-trust`.
+- **INVALID** the signature is broken or the document was modified after signing.
+
+Exit codes: `0` VALID, `1` INVALID, `2` INDETERMINATE.
+
+What it checks: the `SignedInfo` signature, each reference digest (so any change to the document
+is detected), the XAdES signing-certificate binding, and the certificate chain to a trusted root
+(RFC 5280 path validation).
+
+Revocation (CRL/OCSP) is **off by default** (offline). Enable it with `--check-revocation`,
+which fetches revocation data and fails the chain if the certificate is revoked or that data
+cannot be obtained.
+
+⚠️ Limitations: since XAdES-BES carries no trusted timestamp, certificate validity and revocation
+are evaluated at verification time, not at signing time. The national CA certificates rotate and
+expire; re-run `firmauy fetch-cas` to refresh the cache, or use `--ca-file`.
+
+#### Trust anchors: sources and pinned fingerprint
+
+`fetch-cas` downloads from these official sources and verifies the national root against a
+pinned SHA-256 fingerprint (the certificate bytes are not redistributed by this project):
+
+| Certificate | Source |
+|---|---|
+| AC Raíz Nacional de Uruguay (AGESIC) | `https://www.uce.gub.uy/acrn/acrn.cer` |
+| AC Ministerio del Interior (intermediate) | `https://ca.minterior.gub.uy/certificados/MICA.cer` |
+
+Pinned national root fingerprint (SHA-256 of the certificate):
+
+```text
+5533a0401f612c688ebce5bf53f2ec14a734eb178bfae00e50e85dae6723078a
+```
+
+You can audit it yourself against the official download:
+
+```bash
+curl -s https://www.uce.gub.uy/acrn/acrn.cer | openssl x509 -noout -fingerprint -sha256
+# SHA256 Fingerprint=55:33:A0:40:...:8A  (same bytes, openssl prints them upper-case with colons)
+```
+
+The intermediate is accepted only if it is signed by that pinned root.
+
+### Verify a signed PDF
+
+Verify the signatures in a signed PDF (PAdES) locally, mirroring `verify-xml`:
+
+```bash
+firmauy verify-pdf signed.pdf
+firmauy verify-pdf signed.pdf --no-trust
+firmauy verify-pdf signed.pdf --ca-file my-cas.pem
+firmauy verify-pdf signed.pdf --check-revocation
+```
+
+For each signature it checks integrity (intact and cryptographically valid), **coverage**
+(whether the signature covers the whole file or content was added afterwards), and the
+certificate chain to the national root. Trust anchors work exactly like `verify-xml`
+(run `firmauy fetch-cas` once, or pass `--ca-file`).
+
+Same indication model (VALID / INDETERMINATE / INVALID) and exit codes as `verify-xml`. When a
+PDF has multiple signatures, the overall indication is the worst one.
 
 ### Discover tokens and certificates
 

@@ -43,7 +43,10 @@ from cedula_uy_pdf_sign.pkcs11_utils import (
     load_pkcs11_lib,
     select_certificate,
 )
+from cedula_uy_pdf_sign.national_ca import cache_dir, fetch_cas, load_cached_trust_anchors
+from cedula_uy_pdf_sign.pdf_verify import verify_pdf
 from cedula_uy_pdf_sign.xml_sign import sign_xml
+from cedula_uy_pdf_sign.xml_verify import verify_xml
 
 app = typer.Typer(
     help=(
@@ -833,6 +836,196 @@ def sign_xml_batch(
 
     except typer.Exit:
         raise
+    except Exception as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Verification helpers (shared by verify-xml and verify-pdf)
+# ---------------------------------------------------------------------------
+
+def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool):
+    """Return (roots, intermediates): from --ca-file, else the cached national CAs,
+    else (None, None) with a hint. Returns (None, None) when trust is skipped."""
+    if no_trust:
+        return None, None
+    if ca_file is not None:
+        certs = x509.load_pem_x509_certificates(ca_file.read_bytes())
+        roots = [c for c in certs if c.subject == c.issuer]
+        intermediates = [c for c in certs if c.subject != c.issuer]
+        if not roots:
+            raise RuntimeError("--ca-file has no self-signed root certificate.")
+        return roots, intermediates
+    cached_roots, cached_intermediates = load_cached_trust_anchors()
+    if cached_roots:
+        return cached_roots, cached_intermediates
+    typer.secho(
+        "Note: no trust anchors available, checking signature integrity only.\n"
+        "      Run 'firmauy fetch-cas' to cache the national CAs, or pass --ca-file.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
+    return None, None
+
+
+def _print_verify_result(result, prefix: str = "") -> None:
+    """Print one verification result (signer + per-check breakdown)."""
+    if prefix:
+        typer.echo(prefix)
+    typer.echo(f"Signer:  {result.signer}")
+    typer.echo(f"Issuer:  {result.issuer}")
+    typer.echo("")
+    for c in result.checks:
+        mark = "PASS" if c.ok else "FAIL"
+        color = typer.colors.GREEN if c.ok else typer.colors.RED
+        typer.secho(f"  [{mark}] {c.name}" + (f"  ({c.detail})" if c.detail else ""), fg=color)
+    typer.echo("")
+
+
+_INDICATION_COLOR = {
+    "VALID": typer.colors.GREEN,
+    "INDETERMINATE": typer.colors.YELLOW,
+    "INVALID": typer.colors.RED,
+}
+_INDICATION_RANK = {"VALID": 0, "INDETERMINATE": 1, "INVALID": 2}
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: verify-xml
+# ---------------------------------------------------------------------------
+
+@app.command("verify-xml")
+def verify_xml_cmd(
+    input_xml: Path = typer.Argument(..., exists=True, readable=True, help="Signed XML to verify."),
+    ca_file: Optional[Path] = typer.Option(
+        None, "--ca-file",
+        help="PEM bundle of trust anchors (root + intermediates). "
+             "Defaults to the bundled Uruguayan national CAs.",
+    ),
+    no_trust: bool = typer.Option(
+        False, "--no-trust",
+        help="Only check signature integrity (level 1); skip the certificate chain.",
+    ),
+    check_revocation: bool = typer.Option(
+        False, "--check-revocation",
+        help="Also check certificate revocation via CRL/OCSP (level 3). Requires network.",
+    ),
+) -> None:
+    """Verify a signed XAdES XML: signature integrity, and (unless --no-trust) the
+    certificate chain up to the Uruguayan national root.
+
+    Indication: VALID (integrity + trusted chain), INDETERMINATE (integrity OK but
+    chain not trusted/not checked), INVALID (signature broken or document modified).
+    Note: revocation (CRL/OCSP) is not checked, and for XAdES-BES the signing time
+    is self-asserted, so validity is evaluated at verification time.
+    """
+    try:
+        if check_revocation and no_trust:
+            raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+
+        result = verify_xml(
+            input_xml.read_bytes(),
+            trust_roots=roots,
+            intermediates=intermediates,
+            check_revocation=check_revocation,
+        )
+
+        _print_verify_result(result)
+        typer.secho(f"Indication: {result.indication}",
+                    fg=_INDICATION_COLOR[result.indication], bold=True)
+
+        if result.indication == "INVALID":
+            raise typer.Exit(code=1)
+        if result.indication == "INDETERMINATE":
+            raise typer.Exit(code=2)
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: verify-pdf
+# ---------------------------------------------------------------------------
+
+@app.command("verify-pdf")
+def verify_pdf_cmd(
+    input_pdf: Path = typer.Argument(..., exists=True, readable=True, help="Signed PDF to verify."),
+    ca_file: Optional[Path] = typer.Option(
+        None, "--ca-file",
+        help="PEM bundle of trust anchors (root + intermediates). "
+             "Defaults to the cached national CAs (see 'firmauy fetch-cas').",
+    ),
+    no_trust: bool = typer.Option(
+        False, "--no-trust",
+        help="Only check signature integrity; skip the certificate chain.",
+    ),
+    check_revocation: bool = typer.Option(
+        False, "--check-revocation",
+        help="Also check certificate revocation via CRL/OCSP. Requires network.",
+    ),
+) -> None:
+    """Verify the signatures in a PDF (PAdES): integrity, coverage, and (unless --no-trust)
+    the certificate chain up to the Uruguayan national root.
+
+    Same indication model as verify-xml (VALID / INDETERMINATE / INVALID); with multiple
+    signatures, the overall indication is the worst one. Exit: 0 VALID, 1 INVALID, 2 INDETERMINATE.
+    """
+    try:
+        if check_revocation and no_trust:
+            raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+
+        results = verify_pdf(
+            input_pdf,
+            trust_roots=roots,
+            intermediates=intermediates,
+            check_revocation=check_revocation,
+        )
+
+        for i, result in enumerate(results, 1):
+            prefix = f"--- Signature {i} of {len(results)} ---" if len(results) > 1 else ""
+            _print_verify_result(result, prefix)
+
+        overall = max((r.indication for r in results), key=lambda ind: _INDICATION_RANK[ind])
+        typer.secho(f"Indication: {overall}", fg=_INDICATION_COLOR[overall], bold=True)
+
+        if overall == "INVALID":
+            raise typer.Exit(code=1)
+        if overall == "INDETERMINATE":
+            raise typer.Exit(code=2)
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: fetch-cas
+# ---------------------------------------------------------------------------
+
+@app.command("fetch-cas")
+def fetch_cas_cmd() -> None:
+    """Download and cache the Uruguayan national CA certificates for verification.
+
+    The certificates are fetched from their official sources (AGESIC / UCE /
+    Ministerio del Interior); the national root is verified against a pinned
+    fingerprint before caching. This package does not redistribute the state CAs.
+    """
+    try:
+        acrn_path, mica_path = fetch_cas()
+        typer.secho(f"National CAs cached in {cache_dir()}", fg=typer.colors.GREEN)
+        typer.echo(f"  root:         {acrn_path.name}")
+        typer.echo(f"  intermediate: {mica_path.name}")
+        typer.echo("\n'firmauy verify-xml' will now validate the chain to the national root.")
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

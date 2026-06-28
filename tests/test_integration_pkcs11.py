@@ -245,6 +245,40 @@ def test_sign_via_softhsm_produces_valid_signature(softhsm, sample_pdf, tmp_path
         assert status.coverage.name == "ENTIRE_FILE"
 
 
+def test_verify_pdf_integrity_and_tamper(softhsm, sample_pdf, tmp_path):
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+
+    output_pdf = tmp_path / "signed.pdf"
+    proc = softhsm.firmauy(
+        "sign", str(sample_pdf), str(output_pdf),
+        "--pkcs11-lib", softhsm.module, "--token-label", "test-cedula",
+        "--pin-source", "stdin", input_text=PIN + "\n",
+    )
+    assert proc.returncode == 0, _output(proc)
+
+    from cedula_uy_pdf_sign.pdf_verify import verify_pdf
+
+    # Integrity holds; no trust anchors -> INDETERMINATE, all integrity checks pass.
+    results = verify_pdf(output_pdf, trust_roots=None)
+    assert len(results) == 1
+    assert results[0].indication == "INDETERMINATE"
+    assert all(c.ok for c in results[0].checks), \
+        [(c.name, c.detail) for c in results[0].checks if not c.ok]
+
+    # Tampering a byte inside the signed range breaks integrity -> INVALID.
+    data = bytearray(output_pdf.read_bytes())
+    data[len(data) // 4] ^= 0x01
+    tampered = tmp_path / "tampered.pdf"
+    tampered.write_bytes(data)
+    res_bad = verify_pdf(tampered, trust_roots=None)
+    assert res_bad[0].indication == "INVALID"
+
+
 # ---------------------------------------------------------------------------
 # Error / selection branches that the real card cannot safely reproduce.
 # ---------------------------------------------------------------------------

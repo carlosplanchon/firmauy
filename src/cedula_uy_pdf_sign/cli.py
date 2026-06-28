@@ -107,6 +107,7 @@ TsaUrlOpt = Annotated[
 ]
 OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriting existing output file(s).")]
 ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
+QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Do not print the signer identity block (name, issuer, certificate serial, PKCS#11 ID). Use in batch/automation to keep identifying data out of logs.")]
 
 
 # ---------------------------------------------------------------------------
@@ -121,8 +122,15 @@ def _print_signing_info(
     key_id: bytes,
     cert_serial: str,
     tsa_url: Optional[str],
+    quiet: bool = False,
 ) -> None:
-    """Print the aligned signer/token summary shared by `sign` and `sign-batch`."""
+    """Print the aligned signer/token summary shared by `sign` and `sign-batch`.
+
+    Skipped entirely when ``quiet`` is set, to keep identifying data (signer name,
+    certificate serial, PKCS#11 ID) out of automation/CI logs.
+    """
+    if quiet:
+        return
     typer.echo(f"Token:               {token_label_display}")
     typer.echo(f"Signer:              {signer_name}")
     typer.echo(f"Issuer:              {issuer_name}")
@@ -369,6 +377,7 @@ def sign(
     tsa_url: TsaUrlOpt = None,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
     if output_pdf is None:
@@ -426,6 +435,7 @@ def sign(
                 key_id=key_id,
                 cert_serial=cert_serial,
                 tsa_url=tsa_url,
+                quiet=quiet,
             )
 
             pkcs11_signer = PKCS11Signer(
@@ -507,6 +517,7 @@ def sign_batch(
     tsa_url: TsaUrlOpt = None,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
@@ -575,6 +586,7 @@ def sign_batch(
                 key_id=key_id,
                 cert_serial=cert_serial,
                 tsa_url=tsa_url,
+                quiet=quiet,
             )
             typer.echo(f"Files to sign:       {len(input_pdfs)}")
             typer.echo("")
@@ -694,6 +706,7 @@ def sign_xml_cmd(
     pin_fd: PinFdOpt = None,
     timezone: TimezoneOpt = DEFAULT_TIMEZONE,
     overwrite: OverwriteOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Sign an XML document with a Uruguayan cédula (XAdES-BES, enveloped)."""
     if output_xml is None:
@@ -729,6 +742,7 @@ def sign_xml_cmd(
                 key_id=key_id,
                 cert_serial=cert_serial,
                 tsa_url=None,
+                quiet=quiet,
             )
 
             _sign_one_xml(
@@ -772,6 +786,7 @@ def sign_xml_batch(
     pin_fd: PinFdOpt = None,
     timezone: TimezoneOpt = DEFAULT_TIMEZONE,
     overwrite: OverwriteOpt = False,
+    quiet: QuietOpt = False,
 ) -> None:
     """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, enveloped)."""
     try:
@@ -817,6 +832,7 @@ def sign_xml_batch(
                 key_id=key_id,
                 cert_serial=cert_serial,
                 tsa_url=None,
+                quiet=quiet,
             )
             typer.echo(f"Files to sign:       {len(all_xmls)}")
             typer.echo("")

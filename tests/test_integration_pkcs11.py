@@ -245,6 +245,39 @@ def test_sign_via_softhsm_produces_valid_signature(softhsm, sample_pdf, tmp_path
         assert status.coverage.name == "ENTIRE_FILE"
 
 
+def test_quiet_suppresses_identity_block(softhsm, sample_pdf, tmp_path):
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+
+    common = [
+        "--pkcs11-lib", softhsm.module, "--token-label", "test-cedula",
+        "--pin-source", "stdin",
+    ]
+
+    # Without --quiet, the identity block (signer name) is printed.
+    out_verbose = tmp_path / "verbose.pdf"
+    proc = softhsm.firmauy(
+        "sign", str(sample_pdf), str(out_verbose), *common, input_text=PIN + "\n",
+    )
+    assert proc.returncode == 0, _output(proc)
+    assert "PEREZ PEREZ JUAN" in _output(proc)
+
+    # With --quiet, signing still succeeds but no identifying data is printed.
+    out_quiet = tmp_path / "quiet.pdf"
+    proc = softhsm.firmauy(
+        "sign", str(sample_pdf), str(out_quiet), *common, "--quiet", input_text=PIN + "\n",
+    )
+    assert proc.returncode == 0, _output(proc)
+    assert out_quiet.exists()
+    assert "PEREZ PEREZ JUAN" not in _output(proc)
+    assert "Certificate serial:" not in _output(proc)
+    assert "PKCS#11 ID:" not in _output(proc)
+
+
 def test_verify_pdf_integrity_and_tamper(softhsm, sample_pdf, tmp_path):
     key, cert = _write_cert(
         tmp_path, "identity",

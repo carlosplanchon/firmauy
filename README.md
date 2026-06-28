@@ -159,7 +159,16 @@ echo "1234" | firmauy sign input.pdf output_signed.pdf --pin-source stdin
 firmauy sign input.pdf output_signed.pdf --pin-source fd --pin-fd 3
 ```
 
-⚠️ Avoid exposing the PIN in shell history or process lists.
+Choose the source by security context (most to least contained):
+
+| Source | Use for | Why |
+| --- | --- | --- |
+| `prompt` | manual use | the PIN is only typed; never on disk, argv or env |
+| `fd` | secure automation | a dedicated file descriptor you control; not in argv or env |
+| `stdin` | controlled automation | not in argv, but a literal `echo "$PIN" \|` can leak to shell history or process lists |
+| `env` | closed/isolated environments only | last resort: environment variables are inherited by child processes, readable via `/proc/<pid>/environ` and `ps eww`, and can surface in core dumps, container inspection and CI logs |
+
+⚠️ However the PIN is supplied, avoid having it appear in shell history, process lists or logs.
 
 ### Timestamping (TSA, optional)
 
@@ -412,6 +421,8 @@ It does not collect, transmit, or store any user data externally.
 All cryptographic operations are performed on the user's machine and/or the connected smart card.
 
 Note: Optional features such as timestamping (TSA) may involve external network requests, depending on user configuration.
+
+Note: the signing commands print a summary that includes identifying data (signer name, certificate issuer, certificate serial number and PKCS#11 key ID). This stays on your machine, but in batch or automated pipelines that output can end up in CI or centralized logs. Pass `--quiet` (`-q`) to the `sign`, `sign-batch`, `sign-xml` and `sign-xml-batch` commands to suppress that block while still signing.
 
 ## Signature verification
 

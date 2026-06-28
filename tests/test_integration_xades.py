@@ -149,3 +149,35 @@ def test_sign_xml_produces_valid_xades(softhsm_token, tmp_path):
     verified = XMLVerifier().verify(signed, x509_cert=cert_pem, expect_references=2)
     refs = verified if isinstance(verified, list) else [verified]
     assert len(refs) == 2
+
+
+def test_sign_xml_batch_signs_all(softhsm_token, tmp_path):
+    module, env, cert = softhsm_token
+
+    in_dir = tmp_path / "in"
+    out_dir = tmp_path / "out"
+    in_dir.mkdir()
+    names = ["a", "b", "c"]
+    for n in names:
+        (in_dir / f"{n}.xml").write_bytes(
+            f'<?xml version="1.0" encoding="UTF-8"?>'
+            f'<Doc xmlns="http://example.uy/test"><n>{n}</n></Doc>'.encode()
+        )
+
+    # One PKCS#11 session, whole directory, PIN entered once (via stdin).
+    proc = subprocess.run(
+        [sys.executable, "-m", "cedula_uy_pdf_sign", "sign-xml-batch",
+         "--input-dir", str(in_dir), "--output-dir", str(out_dir),
+         "--pkcs11-lib", module, "--token-label", TOKEN_LABEL, "--pin-source", "stdin"],
+        env=env, input=PIN + "\n", capture_output=True, text=True,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+    from signxml import XMLVerifier
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    for n in names:
+        out = out_dir / f"{n}_firmado.xml"
+        assert out.exists(), f"missing {out}"
+        verified = XMLVerifier().verify(out.read_bytes(), x509_cert=cert_pem, expect_references=2)
+        refs = verified if isinstance(verified, list) else [verified]
+        assert len(refs) == 2

@@ -622,6 +622,45 @@ def sign_batch(
 
 
 # ---------------------------------------------------------------------------
+# XML signing helpers (shared by sign-xml and sign-xml-batch)
+# ---------------------------------------------------------------------------
+
+def _make_raw_signer(session, key_id: bytes):
+    """Return a callable that signs bytes on the token with RSA-SHA256."""
+    priv = get_private_key(session, key_id)
+
+    def raw_signer(data: bytes) -> bytes:
+        return bytes(priv.sign(data, mechanism=pkcs11.Mechanism.SHA256_RSA_PKCS))
+
+    return raw_signer
+
+
+def _sign_one_xml(
+    *,
+    input_xml: Path,
+    output_xml: Path,
+    cert: "x509.Certificate",
+    signer,
+    signing_time: datetime,
+    overwrite: bool,
+) -> None:
+    """Sign a single XML (XAdES-BES, enveloped). Raises on any error."""
+    if output_xml.exists() and not overwrite:
+        raise RuntimeError(
+            f"Output file already exists: {output_xml}\n"
+            "Use --overwrite to overwrite it."
+        )
+    ensure_output_parent(output_xml)
+    signed = sign_xml(
+        input_xml.read_bytes(),
+        cert=cert,
+        signer=signer,
+        signing_time=signing_time,
+    )
+    output_xml.write_bytes(signed)
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: sign-xml
 # ---------------------------------------------------------------------------
 
@@ -674,22 +713,126 @@ def sign_xml_cmd(
                 tsa_url=None,
             )
 
-            priv = get_private_key(session, key_id)
-
-            def raw_signer(data: bytes) -> bytes:
-                return bytes(priv.sign(data, mechanism=pkcs11.Mechanism.SHA256_RSA_PKCS))
-
-            signing_time = datetime.now(ZoneInfo(timezone))
-            signed = sign_xml(
-                input_xml.read_bytes(),
+            _sign_one_xml(
+                input_xml=input_xml,
+                output_xml=output_xml,
                 cert=cert,
-                signer=raw_signer,
-                signing_time=signing_time,
+                signer=_make_raw_signer(session, key_id),
+                signing_time=datetime.now(ZoneInfo(timezone)),
+                overwrite=overwrite,
             )
-            output_xml.write_bytes(signed)
 
         typer.secho(f"XML signed successfully: {output_xml}", fg=typer.colors.GREEN)
 
+    except Exception as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: sign-xml-batch
+# ---------------------------------------------------------------------------
+
+@app.command("sign-xml-batch")
+def sign_xml_batch(
+    input_xmls: Optional[List[Path]] = typer.Argument(None, help="Input XMLs to sign."),
+    output_dir: Path = typer.Option(..., "--output-dir", help="Directory where signed XMLs will be saved."),
+    suffix: str = typer.Option("_firmado", "--suffix", help="Suffix appended to the base name of each output file."),
+    input_dir: Optional[Path] = typer.Option(
+        None, "--input-dir",
+        help="Folder of XMLs to sign. Can be combined with positional arguments.",
+    ),
+    recursive: bool = typer.Option(
+        False, "--recursive",
+        help="Recursively search for XMLs in --input-dir.",
+    ),
+    pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
+    token_label: TokenLabelOpt = None,
+    cert_id: CertIdOpt = None,
+    pin_source: PinSourceOpt = PinSource.prompt,
+    pin_env_var: PinEnvVarOpt = None,
+    pin_fd: PinFdOpt = None,
+    timezone: TimezoneOpt = DEFAULT_TIMEZONE,
+    overwrite: OverwriteOpt = False,
+) -> None:
+    """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, enveloped)."""
+    try:
+        all_xmls: List[Path] = list(input_xmls) if input_xmls else []
+
+        if input_dir is not None:
+            if not input_dir.is_dir():
+                typer.secho(
+                    f"--input-dir '{input_dir}' is not a valid directory.",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            pattern = "**/*.xml" if recursive else "*.xml"
+            all_xmls += sorted(input_dir.glob(pattern))
+
+        if not all_xmls:
+            typer.secho(
+                "No input files specified. "
+                "Use positional arguments or --input-dir.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        lib = load_pkcs11_lib(pkcs11_lib)
+        token = find_token(lib, token_label)
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+
+        with token.open(user_pin=final_pin) as session:
+            key_id, cert = select_certificate(session, cert_id)
+
+            signer_name = get_common_name(cert.subject)
+            issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
+            cert_serial = format(cert.serial_number, "X")
+            token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
+            _print_signing_info(
+                token_label_display=token_label_display,
+                signer_name=signer_name,
+                issuer_name=issuer_name,
+                key_id=key_id,
+                cert_serial=cert_serial,
+                tsa_url=None,
+            )
+            typer.echo(f"Files to sign:       {len(all_xmls)}")
+            typer.echo("")
+
+            raw_signer = _make_raw_signer(session, key_id)
+
+            ok_count = 0
+            err_count = 0
+
+            for input_xml in all_xmls:
+                output_xml = output_dir / f"{input_xml.stem}{suffix}.xml"
+                try:
+                    _sign_one_xml(
+                        input_xml=input_xml,
+                        output_xml=output_xml,
+                        cert=cert,
+                        signer=raw_signer,
+                        signing_time=datetime.now(ZoneInfo(timezone)),
+                        overwrite=overwrite,
+                    )
+                    typer.secho(f"OK:    {output_xml}", fg=typer.colors.GREEN)
+                    ok_count += 1
+                except Exception as exc:
+                    typer.secho(f"ERROR: {input_xml}: {exc}", fg=typer.colors.RED, err=True)
+                    err_count += 1
+
+        typer.echo("")
+        typer.echo(f"Signed: {ok_count}/{len(all_xmls)}. Errors: {err_count}.")
+
+        if err_count:
+            raise typer.Exit(code=1)
+
+    except typer.Exit:
+        raise
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

@@ -29,7 +29,7 @@ The CLI tool is invoked as `firmauy` and supports:
 
 - signing individual PDF documents
 - batch-signing multiple PDFs with a single PKCS#11 session
-- signing XML documents (XAdES-BES, enveloped)
+- signing XML documents, individually or in batch (XAdES-BES, enveloped)
 - configuring the visible signature position
 - selecting the signature page
 - discovering available PKCS#11 tokens and certificates
@@ -235,6 +235,25 @@ Signature profile produced:
 ⚠️ This is the XAdES-**BES** level (no trusted timestamp). The produced signature is
 cryptographically valid and conforms to the XAdES standard; legal and regulatory validity
 depends on your use case and applicable rules.
+
+### Sign multiple XML documents (batch)
+
+Sign many XML files with a single PKCS#11 session (the card PIN is entered only once). This
+mirrors `sign-batch` for PDFs and is convenient for bulk workflows such as electronic invoicing.
+
+```bash
+# Explicit file list
+firmauy sign-xml-batch file1.xml file2.xml --output-dir ~/signed
+
+# Whole directory (add --recursive to descend into subfolders)
+firmauy sign-xml-batch --input-dir ~/docs --output-dir ~/signed
+```
+
+Output files are named `<original-name>_firmado.xml` by default; change it with `--suffix`. The
+output directory is created automatically. All the `sign-xml` options (token, certificate and
+PIN selection, `--timezone`, `--overwrite`) also apply.
+
+Make sure you have reviewed all documents before signing them in batch.
 
 ### Discover tokens and certificates
 

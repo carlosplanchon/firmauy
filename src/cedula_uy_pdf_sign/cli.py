@@ -60,6 +60,21 @@ app = typer.Typer(
 
 
 # ---------------------------------------------------------------------------
+# Error formatting
+# ---------------------------------------------------------------------------
+
+def _format_error(exc: Exception) -> str:
+    """Human-readable message for an exception, with friendly text for common
+    PKCS#11 PIN errors (whose own str() is empty)."""
+    import pkcs11.exceptions as pe
+    if isinstance(exc, pe.PinIncorrect):
+        return "Incorrect PIN."
+    if isinstance(exc, pe.PinLocked):
+        return "The PIN is locked (too many incorrect attempts)."
+    return str(exc) or type(exc).__name__
+
+
+# ---------------------------------------------------------------------------
 # Shared CLI option types (reused by `sign` and `sign-batch`)
 # ---------------------------------------------------------------------------
 
@@ -253,7 +268,7 @@ def list_tokens(
             typer.echo(f"{label:<32}  {manufacturer:<20}  {model:<16}  {serial}")
 
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -323,7 +338,7 @@ def list_certs(
                 typer.echo("No certificates found in the token.")
 
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -452,7 +467,7 @@ def sign(
         typer.secho(f"PDF signed successfully: {output_pdf}", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -608,7 +623,7 @@ def sign_batch(
                     typer.secho(f"OK:    {output_pdf}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except Exception as exc:
-                    typer.secho(f"ERROR: {input_pdf}: {exc}", fg=typer.colors.RED, err=True)
+                    typer.secho(f"ERROR: {input_pdf}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
         typer.echo("")
@@ -620,7 +635,7 @@ def sign_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -728,7 +743,7 @@ def sign_xml_cmd(
         typer.secho(f"XML signed successfully: {output_xml}", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -825,7 +840,7 @@ def sign_xml_batch(
                     typer.secho(f"OK:    {output_xml}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except Exception as exc:
-                    typer.secho(f"ERROR: {input_xml}: {exc}", fg=typer.colors.RED, err=True)
+                    typer.secho(f"ERROR: {input_xml}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
         typer.echo("")
@@ -837,7 +852,7 @@ def sign_xml_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -945,7 +960,7 @@ def verify_xml_cmd(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -1004,7 +1019,7 @@ def verify_pdf_cmd(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 
@@ -1027,5 +1042,5 @@ def fetch_cas_cmd() -> None:
         typer.echo(f"  intermediate: {mica_path.name}")
         typer.echo("\n'firmauy verify-xml' will now validate the chain to the national root.")
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

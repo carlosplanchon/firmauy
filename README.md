@@ -92,6 +92,8 @@ It provides the default PKCS#11 module used by this tool:
 /usr/lib/pkcs11/libgclib.so
 ```
 
+Use version `7.5.0-2` or later; older versions could crash the process when a wrong PIN was entered.
+
 ## Installation
 
 ### Installation with uv
@@ -418,33 +420,6 @@ Signed documents can be independently verified using external tools, such as the
 [https://firma.gub.uy/](https://firma.gub.uy/)
 
 Note that a successful **technical** verification does not by itself imply **legal** validity for every use case. See [Legal and compliance](#legal-and-compliance).
-
-## Known issues
-
-### Incorrect PIN may crash the process (middleware bug)
-
-On Arch Linux, entering an incorrect PIN may cause the process to terminate abruptly with:
-
-```text
-*** stack smashing detected ***: terminated
-```
-
-This is a **bug in the PKCS#11 middleware** (`libgclib.so`), not in `cedula-uy-pdf-sign`.
-
-The middleware correctly returns `CKR_PIN_INCORRECT` to the caller, but then appears to corrupt its own memory during error handling.
-
-This is independently reproducible with `pkcs11-tool`:
-
-```bash
-pkcs11-tool --module /usr/lib/pkcs11/libgclib.so --login --test
-# With wrong PIN -> process crashes with stack smash
-```
-
-Because the crash occurs inside native code, it cannot be caught or recovered from at the Python level.
-
-**Practical advice:** double-check your PIN before invoking `firmauy`.
-
-This behavior is outside the control of this application.
 
 ## Additional notes
 

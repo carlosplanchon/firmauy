@@ -20,7 +20,7 @@ class PinSource(str, Enum):
 def get_pin(source: PinSource, env_var: Optional[str], fd: Optional[int]) -> str:
     if source == PinSource.prompt:
         typer.secho(
-            "Warning: entering an incorrect PIN may crash the process due to a bug in the underlying PKCS#11 middleware (libgclib.so), not in firmauy itself.",
+            "Note: an incorrect PIN counts toward the card's retry limit and can block the cédula.",
             fg=typer.colors.YELLOW,
             err=True,
         )

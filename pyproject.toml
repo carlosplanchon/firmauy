@@ -8,7 +8,7 @@ version = "0.8.0"
 authors = [
   { name = "Carlos A. Planchón", email = "carlosandresplanchonprestes@gmail.com" }
 ]
-description = "Sign PDF and XML documents with a Uruguayan national ID card (cédula) via PKCS#11, producing standards-based PDF and XML (XAdES) digital signatures. Not affiliated with AGESIC."
+description = "Sign and verify PDF (PAdES) and XML (XAdES) documents with a Uruguayan national ID card (cédula) via PKCS#11. Standards-based; not affiliated with AGESIC."
 readme = "README.md"
 requires-python = ">=3.10"
 

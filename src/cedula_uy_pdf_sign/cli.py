@@ -50,7 +50,7 @@ from cedula_uy_pdf_sign.xml_verify import verify_xml
 
 app = typer.Typer(
     help=(
-        "Sign PDFs with Uruguayan ID card via PKCS#11 + pyHanko.\n\n"
+        "Sign and verify PDF (PAdES) and XML (XAdES) documents with the Uruguayan ID card (cédula) via PKCS#11.\n\n"
         "Runs locally by default: no data is transmitted externally.\n"
         "(Note: TSA usage may involve external connections depending on configuration.)\n\n"
         "This project is not affiliated with or endorsed by AGESIC. "

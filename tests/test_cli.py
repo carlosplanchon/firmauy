@@ -4,6 +4,8 @@ import datetime
 import json
 from importlib.metadata import version
 
+import pytest
+
 from asn1crypto import keys as asn1keys
 from asn1crypto import x509 as asn1x509
 from cryptography import x509
@@ -14,7 +16,16 @@ from pyhanko.sign.signers import SimpleSigner
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 from typer.testing import CliRunner
 
-from cedula_uy_pdf_sign.cli import _doctor_emit, _emit_verify, _emit_verify_error, app
+from cedula_uy_pdf_sign.cli import (
+    _check_post_sign,
+    _detached_original,
+    _detect_signature_kind,
+    _doctor_emit,
+    _emit_verify,
+    _emit_verify_error,
+    _verify_after_cms,
+    app,
+)
 from cedula_uy_pdf_sign.cms_sign import sign_cms_detached
 from cedula_uy_pdf_sign.verify_common import Check, VerifyResult
 
@@ -177,3 +188,81 @@ def test_doctor_command_json_contract():
         assert {"status", "name", "detail", "fix"} <= set(c)
         assert c["status"] in {"PASS", "WARN", "FAIL"}
     assert result.exit_code == (0 if payload["ok"] else 1)
+
+
+# --- --verify (post-sign self-check) ----------------------------------------
+
+def test_check_post_sign_passes_and_raises():
+    # All checks ok -> no raise (post-sign self-check passes).
+    _check_post_sign(VerifyResult("INDETERMINATE", [Check("intact", True), Check("valid", True)]))
+    # Any failed check -> raise (the produced signature is not intact).
+    with pytest.raises(RuntimeError, match="post-sign verification failed"):
+        _check_post_sign(VerifyResult("INVALID", [Check("intact", False, "tampered"), Check("valid", True)]))
+
+
+def test_verify_after_cms_catches_a_broken_signature(tmp_path):
+    data = b"the signed content\n"
+    doc = tmp_path / "d.bin"
+    doc.write_bytes(data)
+    sig = tmp_path / "d.bin.p7s"
+    sig.write_bytes(_software_p7s(data))
+
+    _verify_after_cms(doc, sig)  # intact -> no raise
+
+    doc.write_bytes(b"TAMPERED content!!\n")  # mutate the bytes the signature covers
+    with pytest.raises(RuntimeError, match="not intact"):
+        _verify_after_cms(doc, sig)
+
+
+# --- verify (auto-detect) ---------------------------------------------------
+
+def test_detect_signature_kind_and_original(tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.7\nx")
+    assert _detect_signature_kind(pdf) == "pdf"
+
+    xml = tmp_path / "a.xml"
+    xml.write_bytes(b"\xef\xbb\xbf<?xml version='1.0'?><ds:Signature/>")  # BOM tolerated
+    assert _detect_signature_kind(xml) == "xml"
+
+    p7s = tmp_path / "doc.bin.p7s"
+    p7s.write_bytes(_software_p7s(b"hi"))
+    assert _detect_signature_kind(p7s) == "cms"
+
+    junk = tmp_path / "j.bin"
+    junk.write_bytes(b"not a signature")
+    with pytest.raises(ValueError, match="could not detect"):
+        _detect_signature_kind(junk)
+
+    assert _detached_original(p7s) == tmp_path / "doc.bin"
+    assert _detached_original(tmp_path / "x.txt") is None
+
+
+def test_verify_autodetect_cms_locates_original(tmp_path):
+    data = b"auto-detected content\n"
+    (tmp_path / "doc.bin").write_bytes(data)
+    p7s = tmp_path / "doc.bin.p7s"
+    p7s.write_bytes(_software_p7s(data))
+
+    result = runner.invoke(app, ["verify", str(p7s), "--no-trust", "--json"])
+    assert result.exit_code == 2  # detected CMS, original located, integrity ok, no trust
+    payload = json.loads(result.output)
+    assert payload["indication"] == "INDETERMINATE"
+    assert payload["signatures"][0]["signer"]["common_name"] == "TEST SIGNER"
+
+
+def test_verify_autodetect_detached_without_original_errors(tmp_path):
+    orphan = tmp_path / "orphan.p7s"
+    orphan.write_bytes(_software_p7s(b"x"))  # original "orphan" does not exist
+    result = runner.invoke(app, ["verify", str(orphan), "--no-trust"])
+    assert result.exit_code == 1
+    assert "needs its original file" in result.output
+
+
+def test_verify_autodetect_xml_dispatch(tmp_path):
+    # A valid XML without a <ds:Signature> proves the XML branch is wired (verify_xml -> INVALID).
+    xml = tmp_path / "u.xml"
+    xml.write_bytes(b"<?xml version='1.0'?><root/>")
+    result = runner.invoke(app, ["verify", str(xml), "--no-trust", "--json"])
+    assert result.exit_code == 1
+    assert json.loads(result.output)["indication"] == "INVALID"

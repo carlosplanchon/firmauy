@@ -133,6 +133,21 @@ If the output path is omitted, the signed file is saved as:
 <input>_firmado.pdf
 ```
 
+### Self-check after signing (`--verify`)
+
+Any signing command (`sign-pdf` / `sign-xml` / `sign-any` and their `*-batch` variants) accepts
+`--verify`: right after writing the output it re-verifies the signature it just produced
+(integrity and, for PDFs, coverage of the whole file). It does **not** validate the trust chain;
+this is a sanity check that catches a corrupt or malformed output immediately, not a trust
+decision. If the produced signature is not intact the command fails (non-zero exit); in batch it
+counts as an error for that file.
+
+```bash
+firmauy sign-pdf input.pdf --verify
+# PDF signed successfully: input_firmado.pdf
+# Verified: signature intact and covers the whole file.
+```
+
 ### Custom signature position
 
 ```bash
@@ -357,6 +372,24 @@ automatically). The PIN can be supplied non-interactively (entered once for the 
 certificate and PIN selection, `--tsa-url`, `--overwrite`) also apply.
 
 Make sure you have reviewed all files before signing them in batch.
+
+### Verify a signed file (auto-detect)
+
+If you do not want to pick the right `verify-*` command, `verify` auto-detects the format by
+content (PDF / XAdES XML / detached CMS `.p7s`) and dispatches to the matching verifier. Same
+checks, flags and exit codes (`0` VALID, `1` INVALID, `2` INDETERMINATE).
+
+```bash
+firmauy verify signed.pdf            # detected as PDF
+firmauy verify signed.xml            # detected as XAdES XML
+firmauy verify document.txt.p7s      # detached: original "document.txt" located automatically
+firmauy verify sig.p7s --original /path/to/document   # or point at the original explicitly
+```
+
+A PDF and an XML are self-contained, so a single argument is enough. A detached `.p7s` also
+needs its original file: by default the `<x>.p7s` → `<x>` name is used, or pass `--original`.
+The same `--no-trust`, `--check-revocation`, `--json`, `--json-pretty` and `--redact` options
+apply. The specific commands below remain available (clearer for scripts that know the format).
 
 ### Verify a signed XML
 

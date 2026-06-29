@@ -146,6 +146,7 @@ TsaHeaderOpt = Annotated[Optional[List[str]], typer.Option("--tsa-header", help=
 OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriting existing output file(s).")]
 ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
 QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Do not print the signer identity block (name, issuer, certificate serial, PKCS#11 ID). Use in batch/automation to keep identifying data out of logs.")]
+VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-verify the produced signature (integrity and coverage, no trust); the command fails if it is not intact.")]
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +467,7 @@ def sign_pdf(
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
     if output_pdf is None:
@@ -567,7 +569,11 @@ def sign_pdf(
                 overwrite=overwrite,
             )
 
+        if verify:
+            _verify_after_pdf(output_pdf)
         typer.secho(f"PDF signed successfully: {output_pdf}", fg=typer.colors.GREEN)
+        if verify:
+            typer.secho("Verified: signature intact and covers the whole file.", fg=typer.colors.GREEN)
 
     except Exception as exc:
         typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
@@ -614,6 +620,7 @@ def sign_pdf_batch(
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
@@ -733,6 +740,8 @@ def sign_pdf_batch(
                         force=force,
                         overwrite=overwrite,
                     )
+                    if verify:
+                        _verify_after_pdf(output_pdf)
                     typer.secho(f"OK:    {output_pdf}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except Exception as exc:
@@ -816,6 +825,35 @@ def _sign_one_cms(
 
 
 # ---------------------------------------------------------------------------
+# Post-sign self-check (--verify): re-verify the freshly produced signature for
+# integrity and coverage (no trust), to catch a broken/corrupt output at once.
+# ---------------------------------------------------------------------------
+
+def _check_post_sign(result) -> None:
+    """Raise if a post-sign verification result has any failed check."""
+    failed = [c for c in result.checks if not c.ok]
+    if failed:
+        detail = "; ".join(c.name + (f" ({c.detail})" if c.detail else "") for c in failed)
+        raise RuntimeError(
+            f"post-sign verification failed (the produced signature is not intact): {detail}"
+        )
+
+
+def _verify_after_pdf(output_pdf: Path) -> None:
+    # Only the signature we just appended (the last one); integrity + coverage, no trust.
+    _check_post_sign(verify_pdf(output_pdf, trust_roots=None)[-1])
+
+
+def _verify_after_xml(output_xml: Path) -> None:
+    _check_post_sign(verify_xml(output_xml.read_bytes(), trust_roots=None))
+
+
+def _verify_after_cms(input_file: Path, output_p7s: Path) -> None:
+    with input_file.open("rb") as data:
+        _check_post_sign(verify_cms(data, output_p7s.read_bytes(), trust_roots=None))
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: sign-xml
 # ---------------------------------------------------------------------------
 
@@ -832,6 +870,7 @@ def sign_xml_cmd(
     timezone: TimezoneOpt = DEFAULT_TIMEZONE,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
 ) -> None:
     """Sign an XML document with a Uruguayan cédula (XAdES-BES, enveloped)."""
     if output_xml is None:
@@ -879,7 +918,11 @@ def sign_xml_cmd(
                 overwrite=overwrite,
             )
 
+        if verify:
+            _verify_after_xml(output_xml)
         typer.secho(f"XML signed successfully: {output_xml}", fg=typer.colors.GREEN)
+        if verify:
+            typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
         typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
@@ -912,6 +955,7 @@ def sign_xml_batch(
     timezone: TimezoneOpt = DEFAULT_TIMEZONE,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
 ) -> None:
     """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, enveloped)."""
     try:
@@ -978,6 +1022,8 @@ def sign_xml_batch(
                         signing_time=datetime.now(ZoneInfo(timezone)),
                         overwrite=overwrite,
                     )
+                    if verify:
+                        _verify_after_xml(output_xml)
                     typer.secho(f"OK:    {output_xml}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except Exception as exc:
@@ -1017,6 +1063,7 @@ def sign_any(
     tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
 ) -> None:
     """Sign any file with a Uruguayan cédula, producing a detached CAdES-BES
     signature (.p7s, CMS/PKCS#7). The original file is left untouched."""
@@ -1079,7 +1126,11 @@ def sign_any(
                 overwrite=overwrite,
             )
 
+        if verify:
+            _verify_after_cms(input_file, output_p7s)
         typer.secho(f"File signed successfully: {output_p7s}", fg=typer.colors.GREEN)
+        if verify:
+            typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
         typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
@@ -1118,6 +1169,7 @@ def sign_any_batch(
     tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
 ) -> None:
     """Sign multiple files with a single PKCS#11 session (detached CAdES-BES .p7s).
 
@@ -1203,6 +1255,8 @@ def sign_any_batch(
                         timestamper=timestamper,
                         overwrite=overwrite,
                     )
+                    if verify:
+                        _verify_after_cms(input_file, output_p7s)
                     typer.secho(f"OK:    {output_p7s}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except Exception as exc:
@@ -1537,6 +1591,108 @@ def verify_any_cmd(
             )
 
         overall = _emit_verify([result], json_output, pretty=json_pretty, redact=redact)
+        if overall == "INVALID":
+            raise typer.Exit(code=1)
+        if overall == "INDETERMINATE":
+            raise typer.Exit(code=2)
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        _emit_verify_error(exc, json_output, pretty=json_pretty)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: verify (auto-detect)
+# ---------------------------------------------------------------------------
+
+def _detect_signature_kind(path: Path) -> str:
+    """Detect a signed file's format by content: "pdf", "xml" (XAdES) or "cms" (detached
+    .p7s in DER). Raises ValueError if none match."""
+    from asn1crypto import cms as asn1cms
+
+    raw = path.read_bytes()
+    if not raw:
+        raise ValueError("file is empty")
+    if raw[:1024].find(b"%PDF-") != -1:
+        return "pdf"
+    head = raw.lstrip(b"\xef\xbb\xbf").lstrip()      # skip a UTF-8 BOM and leading whitespace
+    if head[:1] == b"<":
+        return "xml"
+    try:
+        ci = asn1cms.ContentInfo.load(raw)
+        if ci["content_type"].native == "signed_data":
+            return "cms"
+    except Exception:
+        pass
+    raise ValueError("could not detect the signature type (not a PDF, XAdES XML or CMS/.p7s)")
+
+
+def _detached_original(p7s_path: Path) -> Optional[Path]:
+    """The original file a detached .p7s signs, by the '<x>.p7s -> <x>' convention."""
+    return p7s_path.with_suffix("") if p7s_path.suffix == ".p7s" else None
+
+
+@app.command("verify")
+def verify_cmd(
+    input_file: Path = typer.Argument(..., exists=True, readable=True, dir_okay=False,
+                                      help="Signed file: PDF, XAdES XML or detached CMS/.p7s (auto-detected by content)."),
+    original: Optional[Path] = typer.Option(
+        None, "--original",
+        help="For a detached .p7s only: the original file it signs "
+             "(default: the .p7s path without that suffix).",
+    ),
+    ca_file: Optional[Path] = typer.Option(
+        None, "--ca-file",
+        help="PEM bundle of trust anchors (root + intermediates). "
+             "Defaults to the national CAs bundled with the package.",
+    ),
+    no_trust: bool = typer.Option(
+        False, "--no-trust",
+        help="Only check signature integrity; skip the certificate chain.",
+    ),
+    check_revocation: bool = typer.Option(
+        False, "--check-revocation",
+        help="Also check certificate revocation via CRL/OCSP. Requires network.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
+    json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
+    redact: bool = typer.Option(False, "--redact", help=_REDACT_OPT_HELP),
+) -> None:
+    """Verify a signed file, auto-detecting its format (PDF / XAdES XML / detached CMS .p7s)
+    and dispatching to the matching verifier.
+
+    Same checks, flags, indication model and exit codes as the specific verify-* commands
+    (0 VALID, 1 INVALID, 2 INDETERMINATE). A detached .p7s also needs its original file:
+    by default the '<x>.p7s -> <x>' name is used, or pass --original.
+    """
+    try:
+        json_output = json_output or json_pretty
+        if check_revocation and no_trust:
+            raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+
+        kind = _detect_signature_kind(input_file)
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+
+        if kind == "pdf":
+            results = verify_pdf(input_file, trust_roots=roots, intermediates=intermediates,
+                                 check_revocation=check_revocation)
+        elif kind == "xml":
+            results = [verify_xml(input_file.read_bytes(), trust_roots=roots,
+                                  intermediates=intermediates, check_revocation=check_revocation)]
+        else:  # cms / detached .p7s
+            orig = original or _detached_original(input_file)
+            if orig is None or not orig.exists():
+                raise RuntimeError(
+                    "detached .p7s signature needs its original file; pass it with --original"
+                    + (f" (looked for '{orig}')" if orig is not None else "")
+                )
+            with orig.open("rb") as data:
+                results = [verify_cms(data, input_file.read_bytes(), trust_roots=roots,
+                                      intermediates=intermediates, check_revocation=check_revocation)]
+
+        overall = _emit_verify(results, json_output, pretty=json_pretty, redact=redact)
         if overall == "INVALID":
             raise typer.Exit(code=1)
         if overall == "INDETERMINATE":

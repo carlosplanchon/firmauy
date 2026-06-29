@@ -1,11 +1,11 @@
 # Copyright 2026 Carlos Andrés Planchón Prestes
 # Licensed under the Apache License, Version 2.0
 
-"""CAdES / detached CMS (.p7s) verification — the verify side of ``cms_sign``.
+"""CAdES / detached CMS (.p7s) verification (the verify side of ``cms_sign``).
 
 Tiered like the XML/PDF verifiers:
 
-- **Level 1** (offline, always): signature integrity — the signed bytes hash to the
+- **Level 1** (offline, always): signature integrity, the signed bytes hash to the
   embedded ``messageDigest`` and the signature is cryptographically valid.
 - **Level 2** (offline, default): certificate chain to a trusted root (RFC 5280).
 - **Level 3** (``check_revocation=True``): CRL/OCSP. Needs network.

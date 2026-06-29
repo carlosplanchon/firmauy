@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cedula-uy-pdf-sign"
-version = "0.8.0"
+version = "0.9.0"
 authors = [
   { name = "Carlos A. Planchón", email = "carlosandresplanchonprestes@gmail.com" }
 ]
@@ -46,6 +46,9 @@ firmauy = "cedula_uy_pdf_sign.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+cedula_uy_pdf_sign = ["data/*.pem", "data/PROVENANCE.md"]
 
 [dependency-groups]
 dev = ["pytest>=8", "signxml>=4"]

@@ -58,6 +58,7 @@ class TestEnsureOutputParent:
 
     def test_existing_directory_no_error(self, tmp_path):
         ensure_output_parent(tmp_path / "file.pdf")  # tmp_path ya existe
+        assert tmp_path.exists()
 
 
 class TestMakeAppearancePdf:

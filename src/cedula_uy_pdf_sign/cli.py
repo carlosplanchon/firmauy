@@ -2,6 +2,7 @@
 # Copyright 2026 Carlos Andrés Planchón Prestes
 # Licensed under the Apache License, Version 2.0
 
+import os
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -43,7 +44,12 @@ from cedula_uy_pdf_sign.pkcs11_utils import (
     load_pkcs11_lib,
     select_certificate,
 )
-from cedula_uy_pdf_sign.national_ca import cache_dir, fetch_cas, load_cached_trust_anchors
+from cedula_uy_pdf_sign.national_ca import (
+    cache_dir,
+    fetch_cas,
+    load_bundled_trust_anchors,
+    load_cached_trust_anchors,
+)
 from cedula_uy_pdf_sign.pdf_verify import verify_pdf
 from cedula_uy_pdf_sign.xml_sign import sign_xml
 from cedula_uy_pdf_sign.xml_verify import verify_xml
@@ -108,6 +114,9 @@ TsaUrlOpt = Annotated[
         ),
     ),
 ]
+TsaUserOpt = Annotated[Optional[str], typer.Option("--tsa-user", help="Username for HTTP Basic auth on the TSA (requires --tsa-url and --tsa-pass-env).")]
+TsaPassEnvOpt = Annotated[Optional[str], typer.Option("--tsa-pass-env", help="Environment variable holding the TSA password for HTTP Basic auth (kept off the command line).")]
+TsaHeaderOpt = Annotated[Optional[List[str]], typer.Option("--tsa-header", help="Extra HTTP header sent to the TSA as 'Name: Value' (repeatable; e.g. a Bearer token or API key).")]
 OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriting existing output file(s).")]
 ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
 QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Do not print the signer identity block (name, issuer, certificate serial, PKCS#11 ID). Use in batch/automation to keep identifying data out of logs.")]
@@ -141,6 +150,53 @@ def _print_signing_info(
     typer.echo(f"Certificate serial:  {cert_serial}")
     if tsa_url:
         typer.echo(f"TSA:                 {tsa_url}")
+
+
+def _build_timestamper(
+    *,
+    tsa_url: Optional[str],
+    tsa_user: Optional[str],
+    tsa_pass_env: Optional[str],
+    tsa_header: Optional[List[str]],
+):
+    """Build an HTTPTimeStamper from the TSA options, or None when no --tsa-url is given.
+
+    Supports HTTP Basic auth (``--tsa-user`` + ``--tsa-pass-env``) and arbitrary extra
+    headers (``--tsa-header 'Name: Value'``, e.g. a Bearer token / API key) for credentialed
+    RFC 3161 TSAs. The password is read from an environment variable, never taken on the
+    command line. Raises ``typer.BadParameter`` on inconsistent options."""
+    if tsa_url is None:
+        if tsa_user or tsa_pass_env or tsa_header:
+            raise typer.BadParameter(
+                "--tsa-user / --tsa-pass-env / --tsa-header require --tsa-url."
+            )
+        return None
+
+    auth = None
+    if tsa_user or tsa_pass_env:
+        if not (tsa_user and tsa_pass_env):
+            raise typer.BadParameter(
+                "HTTP Basic auth for the TSA needs both --tsa-user and --tsa-pass-env."
+            )
+        password = os.environ.get(tsa_pass_env)
+        if password is None:
+            raise typer.BadParameter(
+                f"Environment variable '{tsa_pass_env}' (from --tsa-pass-env) is not set."
+            )
+        auth = (tsa_user, password)
+
+    headers = None
+    if tsa_header:
+        headers = {}
+        for item in tsa_header:
+            name, sep, value = item.partition(":")
+            if not sep or not name.strip():
+                raise typer.BadParameter(
+                    f"--tsa-header '{item}' must be in 'Name: Value' format."
+                )
+            headers[name.strip()] = value.strip()
+
+    return HTTPTimeStamper(tsa_url, auth=auth, headers=headers)
 
 
 def _sign_one_pdf(
@@ -378,6 +434,9 @@ def sign_pdf(
     location: LocationOpt = None,
     contact_info: ContactInfoOpt = None,
     tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
@@ -387,6 +446,13 @@ def sign_pdf(
         output_pdf = input_pdf.with_stem(input_pdf.stem + "_firmado")
     try:
         # --- Pre-flight checks ---
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url,
+            tsa_user=tsa_user,
+            tsa_pass_env=tsa_pass_env,
+            tsa_header=tsa_header,
+        )
+
         if input_pdf.resolve() == output_pdf.resolve():
             raise RuntimeError(
                 "Input and output files are the same. "
@@ -446,8 +512,6 @@ def sign_pdf(
                 cert_id=key_id,
                 key_id=key_id,
             )
-
-            timestamper = HTTPTimeStamper(tsa_url) if tsa_url else None
 
             meta = signers.PdfSignatureMetadata(
                 field_name=field_name,
@@ -518,12 +582,22 @@ def sign_pdf_batch(
     location: LocationOpt = None,
     contact_info: ContactInfoOpt = None,
     tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url,
+            tsa_user=tsa_user,
+            tsa_pass_env=tsa_pass_env,
+            tsa_header=tsa_header,
+        )
+
         all_pdfs: List[Path] = list(input_pdfs) if input_pdfs else []
 
         if input_dir is not None:
@@ -599,8 +673,6 @@ def sign_pdf_batch(
                 cert_id=key_id,
                 key_id=key_id,
             )
-
-            timestamper = HTTPTimeStamper(tsa_url) if tsa_url else None
 
             meta = signers.PdfSignatureMetadata(
                 field_name=field_name,
@@ -914,6 +986,9 @@ def sign_any(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
@@ -922,6 +997,13 @@ def sign_any(
     if output_p7s is None:
         output_p7s = input_file.with_name(input_file.name + ".p7s")
     try:
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url,
+            tsa_user=tsa_user,
+            tsa_pass_env=tsa_pass_env,
+            tsa_header=tsa_header,
+        )
+
         if input_file.resolve() == output_p7s.resolve():
             raise RuntimeError(
                 "Input and output files are the same. "
@@ -962,7 +1044,6 @@ def sign_any(
                 cert_id=key_id,
                 key_id=key_id,
             )
-            timestamper = HTTPTimeStamper(tsa_url) if tsa_url else None
 
             _sign_one_cms(
                 input_file=input_file,
@@ -1006,14 +1087,29 @@ def sign_any_batch(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
 ) -> None:
     """Sign multiple files with a single PKCS#11 session (detached CAdES-BES .p7s).
 
-    Each output is named ``<input-name>.p7s`` inside --output-dir."""
+    Each output is named ``<input-name>.p7s`` inside --output-dir; files found under
+    --input-dir keep their relative subdirectory, so equally named files in different
+    subfolders (with --recursive) do not collide."""
     try:
-        all_files: List[Path] = list(input_files) if input_files else []
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url,
+            tsa_user=tsa_user,
+            tsa_pass_env=tsa_pass_env,
+            tsa_header=tsa_header,
+        )
+
+        # (input_file, output_p7s) jobs. Positional files are named by basename; files found
+        # under --input-dir keep their relative subdirectory under --output-dir, so identically
+        # named files in different subfolders (with --recursive) do not collide.
+        jobs = [(p, output_dir / f"{p.name}.p7s") for p in (input_files or [])]
 
         if input_dir is not None:
             if not input_dir.is_dir():
@@ -1024,9 +1120,12 @@ def sign_any_batch(
                 )
                 raise typer.Exit(code=1)
             pattern = f"**/{glob}" if recursive else glob
-            all_files += sorted(p for p in input_dir.glob(pattern) if p.is_file())
+            for p in sorted(input_dir.glob(pattern)):
+                if p.is_file():
+                    rel = p.relative_to(input_dir).as_posix()
+                    jobs.append((p, output_dir / f"{rel}.p7s"))
 
-        if not all_files:
+        if not jobs:
             typer.secho(
                 "No input files specified. "
                 "Use positional arguments or --input-dir.",
@@ -1057,7 +1156,7 @@ def sign_any_batch(
                 tsa_url=tsa_url,
                 quiet=quiet,
             )
-            typer.echo(f"Files to sign:       {len(all_files)}")
+            typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
             pkcs11_signer = PKCS11Signer(
@@ -1065,13 +1164,11 @@ def sign_any_batch(
                 cert_id=key_id,
                 key_id=key_id,
             )
-            timestamper = HTTPTimeStamper(tsa_url) if tsa_url else None
 
             ok_count = 0
             err_count = 0
 
-            for input_file in all_files:
-                output_p7s = output_dir / f"{input_file.name}.p7s"
+            for input_file, output_p7s in jobs:
                 try:
                     _sign_one_cms(
                         input_file=input_file,
@@ -1087,7 +1184,7 @@ def sign_any_batch(
                     err_count += 1
 
         typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(all_files)}. Errors: {err_count}.")
+        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}.")
 
         if err_count:
             raise typer.Exit(code=1)
@@ -1104,8 +1201,9 @@ def sign_any_batch(
 # ---------------------------------------------------------------------------
 
 def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool):
-    """Return (roots, intermediates): from --ca-file, else the cached national CAs,
-    else (None, None) with a hint. Returns (None, None) when trust is skipped."""
+    """Return (roots, intermediates): from --ca-file, else the cached national CAs, else the
+    certificates bundled with the package, else (None, None) with a hint. Returns (None, None)
+    when trust is skipped."""
     if no_trust:
         return None, None
     if ca_file is not None:
@@ -1118,9 +1216,14 @@ def _resolve_trust_anchors(ca_file: Optional[Path], no_trust: bool):
     cached_roots, cached_intermediates = load_cached_trust_anchors()
     if cached_roots:
         return cached_roots, cached_intermediates
+    bundled_roots, bundled_intermediates = load_bundled_trust_anchors()
+    if bundled_roots:
+        return bundled_roots, bundled_intermediates
+    # Reached only if the bundled trust anchors could not be loaded (e.g. a broken install),
+    # since they are otherwise always present.
     typer.secho(
-        "Note: no trust anchors available, checking signature integrity only.\n"
-        "      Run 'firmauy fetch-cas' to cache the national CAs, or pass --ca-file.",
+        "Note: the bundled trust anchors could not be loaded; checking signature integrity\n"
+        "      only. Pass --ca-file with the national CAs, or run 'firmauy fetch-cas'.",
         fg=typer.colors.YELLOW,
         err=True,
     )
@@ -1159,7 +1262,7 @@ def verify_xml_cmd(
     ca_file: Optional[Path] = typer.Option(
         None, "--ca-file",
         help="PEM bundle of trust anchors (root + intermediates). "
-             "Defaults to the bundled Uruguayan national CAs.",
+             "Defaults to the national CAs bundled with the package.",
     ),
     no_trust: bool = typer.Option(
         False, "--no-trust",
@@ -1217,7 +1320,7 @@ def verify_pdf_cmd(
     ca_file: Optional[Path] = typer.Option(
         None, "--ca-file",
         help="PEM bundle of trust anchors (root + intermediates). "
-             "Defaults to the cached national CAs (see 'firmauy fetch-cas').",
+             "Defaults to the national CAs bundled with the package.",
     ),
     no_trust: bool = typer.Option(
         False, "--no-trust",
@@ -1277,7 +1380,7 @@ def verify_any_cmd(
     ca_file: Optional[Path] = typer.Option(
         None, "--ca-file",
         help="PEM bundle of trust anchors (root + intermediates). "
-             "Defaults to the cached national CAs (see 'firmauy fetch-cas').",
+             "Defaults to the national CAs bundled with the package.",
     ),
     no_trust: bool = typer.Option(
         False, "--no-trust",
@@ -1308,13 +1411,16 @@ def verify_any_cmd(
 
         roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
 
-        result = verify_cms(
-            input_file.read_bytes(),
-            p7s_file.read_bytes(),
-            trust_roots=roots,
-            intermediates=intermediates,
-            check_revocation=check_revocation,
-        )
+        # Stream the (possibly large) signed file instead of loading it into memory; only the
+        # small detached signature is read whole.
+        with input_file.open("rb") as data:
+            result = verify_cms(
+                data,
+                p7s_file.read_bytes(),
+                trust_roots=roots,
+                intermediates=intermediates,
+                check_revocation=check_revocation,
+            )
 
         _print_verify_result(result)
         typer.secho(f"Indication: {result.indication}",
@@ -1337,15 +1443,32 @@ def verify_any_cmd(
 # ---------------------------------------------------------------------------
 
 @app.command("fetch-cas")
-def fetch_cas_cmd() -> None:
-    """Download and cache the Uruguayan national CA certificates for verification.
+def fetch_cas_cmd(
+    from_file: Optional[List[Path]] = typer.Option(
+        None, "--from-file",
+        exists=True, readable=True, dir_okay=False,
+        help="PEM/DER file(s) to seed the cache from instead of downloading. Any "
+             "certificate matching a pinned fingerprint (national root and/or the "
+             "Ministerio del Interior intermediate) is used; anything not supplied is "
+             "downloaded. Useful when the intermediate's source is unreachable (its "
+             "official server is decommissioned). Repeatable; bundles are accepted.",
+    ),
+) -> None:
+    """Optional: refresh the national CA certificates from the network.
 
-    The certificates are fetched from their official sources (AGESIC / UCE /
-    Ministerio del Interior); the national root is verified against a pinned
-    fingerprint before caching. This package does not redistribute the state CAs.
+    Not normally needed: verification already works offline using the certificates bundled
+    with the package. This only re-downloads them into a per-user cache (which takes precedence
+    over the bundled copies). Each certificate is verified against a pinned fingerprint before
+    caching, and the intermediate is checked to be signed by the root, so the cache can only
+    ever hold the same pinned certificates. The root downloads reliably; the Ministerio del
+    Interior intermediate's official server is decommissioned, so it falls back to a Certificate
+    Transparency mirror, or pass a local copy with --from-file.
     """
     try:
-        acrn_path, mica_path = fetch_cas()
+        acrn_path, mica_path = fetch_cas(
+            progress=lambda msg: typer.secho(msg, fg=typer.colors.YELLOW, err=True),
+            source_files=from_file,
+        )
         typer.secho(f"National CAs cached in {cache_dir()}", fg=typer.colors.GREEN)
         typer.echo(f"  root:         {acrn_path.name}")
         typer.echo(f"  intermediate: {mica_path.name}")

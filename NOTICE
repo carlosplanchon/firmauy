@@ -1,3 +1,10 @@
 Copyright 2026 Carlos Andrés Planchón Prestes
 
 This project is licensed under the Apache License, Version 2.0.
+
+This product bundles the public Uruguayan national PKI Certification Authority
+certificates (trust anchors) under src/cedula_uy_pdf_sign/data/, used only to
+verify signatures against the national root. They are public certificates (not
+private keys), issued by AGESIC and the Ministerio del Interior. See
+src/cedula_uy_pdf_sign/data/PROVENANCE.md for sources and fingerprints. This
+project is not affiliated with or endorsed by AGESIC.

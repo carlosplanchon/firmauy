@@ -2,7 +2,7 @@
 
 ![cedula-uy-pdf-sign banner](https://raw.githubusercontent.com/carlosplanchon/cedula-uy-pdf-sign/main/assets/banner.jpg)
 
-Sign PDF and XML documents locally using a Uruguayan national ID card (cédula) through PKCS#11, producing standards-based PDF and XML (XAdES) digital signatures that verify with standard signature validators.
+Sign and verify PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) locally using a Uruguayan national ID card (cédula) through PKCS#11. Standards-based signatures that verify with standard validators, with local chain validation to the Uruguayan national root.
 
 [![PyPI version](https://img.shields.io/pypi/v/cedula-uy-pdf-sign.svg)](https://pypi.org/project/cedula-uy-pdf-sign/)
 [![Python versions](https://img.shields.io/pypi/pyversions/cedula-uy-pdf-sign.svg)](https://pypi.org/project/cedula-uy-pdf-sign/)
@@ -19,11 +19,12 @@ Sign PDF and XML documents locally using a Uruguayan national ID card (cédula) 
 uv tool install cedula-uy-pdf-sign     # install
 firmauy list-tokens                    # verify the card is detected
 firmauy sign-pdf input.pdf                 # sign -> input_firmado.pdf (prompts for the PIN)
+firmauy verify-pdf input_firmado.pdf       # verify (offline, chain to the national root)
 ```
 
 ## Overview
 
-`cedula-uy-pdf-sign` provides a local, developer-oriented workflow for signing PDF documents with a Uruguayan national ID card using PKCS#11 middleware.
+`cedula-uy-pdf-sign` provides a local, developer-oriented workflow for **signing and verifying** documents and files with a Uruguayan national ID card (cédula) using PKCS#11 middleware: PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s).
 
 The CLI tool is invoked as `firmauy` and supports:
 
@@ -173,13 +174,28 @@ Choose the source by security context (most to least contained):
 
 ### Timestamping (TSA, optional)
 
-Embed a trusted timestamp from a Time Stamping Authority:
+Embed a trusted timestamp from a Time Stamping Authority (RFC 3161), available on `sign-pdf`, `sign-pdf-batch`, `sign-any` and `sign-any-batch` (producing the **-T** level: PAdES-T / CAdES-T):
 
 ```bash
 firmauy sign-pdf input.pdf output_signed.pdf --tsa-url https://your-tsa/endpoint
+firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint   # CAdES-T
 ```
 
-TSA timestamping is **optional** and is **not required** for the standard Uruguayan cédula signing flow. It adds independent, trusted-time evidence to the signature and may involve an external network request.
+**Credentialed TSAs.** For a TSA that requires authentication, firmauy supports HTTP Basic auth and arbitrary headers (e.g. a Bearer token / API key). The password is read from an environment variable, never from the command line:
+
+```bash
+# HTTP Basic auth (password from an env var)
+TSA_PW='secret' firmauy sign-any contract.zip \
+  --tsa-url https://your-tsa/endpoint --tsa-user alice --tsa-pass-env TSA_PW
+
+# Bearer token / API key via a custom header (repeatable)
+firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint \
+  --tsa-header "Authorization: Bearer $TOKEN"
+```
+
+TSA timestamping is **optional** and is **not required** for the standard Uruguayan cédula signing flow. It adds independent, trusted-time evidence to the signature and involves an external network request to the TSA.
+
+> Any public RFC 3161 TSA works here for a **technical** timestamp; a *qualified* timestamp requires credentials from an accredited provider (which is what `--tsa-user` / `--tsa-header` are for). Client-certificate (mTLS) TSAs are **not** supported.
 
 ### Sign batch
 
@@ -282,7 +298,7 @@ Make sure you have reviewed all documents before signing them in batch.
 
 ### Sign any file (CAdES / .p7s)
 
-Sign **any file** — not just PDF or XML — with the cédula, producing a standards-based
+Sign **any file** (not just PDF or XML) with the cédula, producing a standards-based
 **CAdES-BES detached** signature (RFC 5652 CMS / PKCS#7), following ETSI EN 319 122. This
 completes the AdES triad alongside PAdES (PDF) and XAdES (XML).
 
@@ -343,31 +359,28 @@ Make sure you have reviewed all files before signing them in batch.
 
 ### Verify a signed XML
 
-Verify a signed XAdES XML locally: signature integrity plus, when trust anchors are available,
-the certificate chain up to the Uruguayan national root. No smart card is needed to verify.
+Verify a signed XAdES XML locally: signature integrity plus the certificate chain up to the
+Uruguayan national root. No smart card is needed to verify.
 
-This project does **not** redistribute the state CA certificates. To enable chain validation,
-fetch them once from their official sources (the national root is checked against a pinned
-fingerprint and cached locally), or supply your own with `--ca-file`:
+The national CA certificates are **bundled with the package** (each verified against a pinned
+fingerprint), so chain validation works **offline, out of the box**, with no setup needed:
 
 ```bash
-# Cache the national CAs from their official sources (one time)
-firmauy fetch-cas
-
-# Verify (integrity + chain to the national root, using the cached CAs)
+# Verify (integrity + chain to the national root): bundled CAs are used automatically
 firmauy verify-xml signed.xml
 
 # Only check signature integrity, skip the certificate chain
 firmauy verify-xml signed.xml --no-trust
 
-# Use your own trust anchors instead (PEM bundle: root + intermediates)
+# Override the trust anchors with your own (PEM bundle: root + intermediates)
 firmauy verify-xml signed.xml --ca-file my-cas.pem
 
 # Also check certificate revocation via CRL/OCSP (needs network)
 firmauy verify-xml signed.xml --check-revocation
 ```
 
-Without cached CAs or `--ca-file`, verification falls back to signature integrity only (level 1).
+Trust anchors are resolved in order: `--ca-file`, then the cache (`firmauy fetch-cas`), then the
+bundled certificates. With `--no-trust`, verification reports signature integrity only (level 1).
 
 It reports a per-check breakdown and an overall indication:
 
@@ -386,15 +399,25 @@ Revocation (CRL/OCSP) is **off by default** (offline). Enable it with `--check-r
 which fetches revocation data and fails the chain if the certificate is revoked or that data
 cannot be obtained.
 
+> ⚠️ For **cédula** signatures, `--check-revocation` currently **cannot succeed**: the leaf
+> certificate's CRL distribution point is on the Ministerio del Interior server
+> (`ca.minterior.gub.uy`), which has been decommissioned and returns `HTTP 501`. Since
+> revocation is `hard-fail`, unreachable revocation data fails the chain. Use the default
+> (no `--check-revocation`) until the CRL endpoint is restored.
+
 ⚠️ Limitations: since XAdES-BES carries no trusted timestamp, certificate validity and revocation
-are evaluated at verification time, not at signing time. The national CA certificates rotate and
-expire; re-run `firmauy fetch-cas` to refresh the cache, or use `--ca-file`.
+are evaluated at verification time, not at signing time. The bundled national CA certificates
+expire (2031) and can be rotated by the issuer; re-run `firmauy fetch-cas` to refresh from the
+network, or use `--ca-file`.
 
-#### Trust anchors: sources and pinned fingerprints
+#### Trust anchors: bundled, with pinned fingerprints
 
-`fetch-cas` downloads the certificates and verifies **each** against a pinned SHA-256
-fingerprint before caching (the certificate bytes are not redistributed by this project —
-only the hashes are). The intermediate is, in addition, checked to be signed by the root.
+The package **bundles** these certificates as built-in trust anchors (public certificates, see
+[`data/PROVENANCE.md`](https://github.com/carlosplanchon/cedula-uy-pdf-sign/blob/main/src/cedula_uy_pdf_sign/data/PROVENANCE.md)); `fetch-cas` can refresh them
+from the sources below. Every certificate (bundled, cached, downloaded, or supplied via
+`--ca-file` / `--from-file`) is verified against a pinned SHA-256 fingerprint, and the
+intermediate is additionally checked to be signed by the root, so the origin of the bytes never
+matters.
 
 | Certificate | Source(s), tried in order |
 |---|---|
@@ -408,6 +431,23 @@ only the hashes are). The intermediate is, in addition, checked to be signed by 
 > Transparency log (crt.sh), retrying transient errors. This is safe regardless of the
 > source: the bytes are accepted only if they match the pinned fingerprint below *and*
 > are signed by the pinned root. If the official server is restored, it is used first.
+
+`fetch-cas` is **optional**: verification already uses the bundled certificates; it only
+refreshes a per-user cache. If you do run it and crt.sh is flaky, you can seed the intermediate
+from a local copy with `--from-file` instead of downloading. The fingerprint pin makes the
+file's origin irrelevant; a copy that doesn't match a pin is ignored and downloaded instead:
+
+```bash
+# Seed the intermediate from a local file; the root still downloads (it is reliable)
+firmauy fetch-cas --from-file mica.pem
+
+# Fully offline: supply both (a bundle, or repeat --from-file)
+firmauy fetch-cas --from-file acrn.pem --from-file mica.pem
+```
+
+Any certificate matching a pinned fingerprint is taken from the supplied file(s) instead of
+being downloaded. (The cédula middleware does **not** install these certificates, and the
+package already bundles them, so you rarely need this.)
 
 Pinned fingerprints (SHA-256 of each certificate, DER):
 
@@ -443,7 +483,7 @@ firmauy verify-pdf signed.pdf --check-revocation
 For each signature it checks integrity (intact and cryptographically valid), **coverage**
 (whether the signature covers the whole file or content was added afterwards), and the
 certificate chain to the national root. Trust anchors work exactly like `verify-xml`
-(run `firmauy fetch-cas` once, or pass `--ca-file`).
+(bundled by default; override with `--ca-file`).
 
 Same indication model (VALID / INDETERMINATE / INVALID) and exit codes as `verify-xml`. When a
 PDF has multiple signatures, the overall indication is the worst one.
@@ -470,7 +510,7 @@ firmauy verify-any contract.zip --check-revocation
 
 It checks integrity (the signed bytes hash to the embedded digest and the signature is
 cryptographically valid) and the certificate chain to the national root. Trust anchors work
-exactly like `verify-xml` (run `firmauy fetch-cas` once, or pass `--ca-file`). A detached CMS
+exactly like `verify-xml` (bundled by default; override with `--ca-file`). A detached CMS
 signature has no PDF-style coverage notion: it signs exactly the bytes it is verified against.
 
 Same indication model (VALID / INDETERMINATE / INVALID) and exit codes as `verify-xml`.
@@ -525,19 +565,21 @@ All cryptographic operations are performed on the user's machine and/or the conn
 
 Note: Optional features such as timestamping (TSA) may involve external network requests, depending on user configuration.
 
-Note: the signing commands print a summary that includes identifying data (signer name, certificate issuer, certificate serial number and PKCS#11 key ID). This stays on your machine, but in batch or automated pipelines that output can end up in CI or centralized logs. Pass `--quiet` (`-q`) to the `sign-pdf`, `sign-pdf-batch`, `sign-xml` and `sign-xml-batch` commands to suppress that block while still signing.
+Note: the signing commands print a summary that includes identifying data (signer name, certificate issuer, certificate serial number and PKCS#11 key ID). This stays on your machine, but in batch or automated pipelines that output can end up in CI or centralized logs. Pass `--quiet` (`-q`) to the `sign-pdf`, `sign-pdf-batch`, `sign-xml`, `sign-xml-batch`, `sign-any` and `sign-any-batch` commands to suppress that block while still signing.
 
 ## Signature verification
 
-Signed documents can be independently verified using external tools, such as the official validator provided by AGESIC (no affiliation implied):
+For **authoritative** verification, especially for any legal or official purpose, use the official validator provided by AGESIC (no affiliation implied):
 
 [https://firma.gub.uy/](https://firma.gub.uy/)
+
+This tool also verifies signatures **locally** (`firmauy verify-pdf` / `verify-xml` / `verify-any`, with chain validation to the Uruguayan national root, no smart card needed; see [Usage](#usage)). That is a convenient technical check, **not** a replacement for the official validator.
 
 Note that a successful **technical** verification does not by itself imply **legal** validity for every use case. See [Legal and compliance](#legal-and-compliance).
 
 ## Additional notes
 
-- The default visual signature appearance was derived by analyzing documents signed with official software.
+- The default visual signature appearance was modeled on real documents signed with the Uruguayan ID card.
 - This project focuses on practical interoperability rather than strict compliance with any specific implementation.
 
 ## Legal and compliance
@@ -557,20 +599,21 @@ While it uses standard cryptographic mechanisms and aims to align with Uruguayan
 
 ### Intended use
 
-Local, developer-oriented PDF signing using a Uruguayan ID card through PKCS#11. It is especially aimed at users who want to:
+Local, developer-oriented signing and verification using a Uruguayan ID card through PKCS#11. It is especially aimed at users who want to:
 
-- sign PDF documents locally
+- sign PDFs (PAdES), XML documents (XAdES), and arbitrary files (CAdES/.p7s) locally
+- verify those signatures locally, including the certificate chain to the national root
 - understand and reproduce a PKCS#11-based signing workflow
 - experiment with smart card integration on Linux
-- build automation around PDF signing under their own responsibility
+- build automation around signing and verification under their own responsibility
 
 It is **not** intended to replace official, certified, or legally guaranteed signing platforms.
 
 ### Scope
 
-This tool focuses on technical integration with PKCS#11, PDF signing workflows, and reproducibility of signature appearance.
+This tool focuses on technical integration with PKCS#11: signing (PDF/PAdES, XML/XAdES, files/CAdES) and local, standards-based verification, including certificate-chain validation to the Uruguayan national root.
 
-It does **not** validate certificates against official trust lists, provide legal guarantees, or replace certified signing platforms.
+It is **not** an official validator: it does not consult the official trust-service status list (TSL) or evaluate accreditation / qualified status, provide legal guarantees, or replace certified signing platforms.
 
 ## Copyright / software registration
 
@@ -624,7 +667,7 @@ The script prints ready-to-run `firmauy list-certs` / `firmauy sign-pdf` command
 
 The token persists under `.softhsm`, so this doubles as a normal development loop: run `firmauy` by hand as often as you like (signing test PDFs, trying signature positions with `--x1/--y1/...`, exercising `sign-pdf-batch`, reproducing a reported bug) while iterating on the code, without the card and without risking PIN lockout. The real card is then only needed for a final validation run and for middleware-specific behaviour.
 
-The same setup powers a set of end-to-end integration tests (`tests/test_integration_pkcs11.py`) that exercise the real PKCS#11 path: signing plus cryptographic verification of the resulting PDF, and the selection/error branches that are unsafe to reproduce on the real card (expired certificate, certificate without a private key, multiple tokens, certificate scoring and `--cert-id` override). They are **skipped automatically** when SoftHSM2 / OpenSC / OpenSSL are not installed, so `uv run pytest` works either way.
+The same setup powers the end-to-end integration tests (`tests/test_integration_pkcs11.py`, `test_integration_xades.py`, `test_integration_cms.py`) that exercise the real PKCS#11 path: signing PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) plus cryptographic verification of the result, and the selection/error branches that are unsafe to reproduce on the real card (expired certificate, certificate without a private key, multiple tokens, certificate scoring and `--cert-id` override). They are **skipped automatically** when SoftHSM2 / OpenSC / OpenSSL (or signxml) are not installed, so `uv run pytest` works either way.
 
 ## Contributing & reporting issues
 

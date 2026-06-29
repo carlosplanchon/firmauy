@@ -39,7 +39,7 @@ for cand in \
     /usr/lib64/softhsm/libsofthsm2.so; do
     if [ -e "$cand" ]; then MODULE="$cand"; break; fi
 done
-: "${MODULE:?libsofthsm2.so not found — install softhsm first}"
+: "${MODULE:?libsofthsm2.so not found; install softhsm first}"
 
 PIN=1234
 SOPIN=0000

@@ -136,7 +136,7 @@ def test_sign_any_produces_valid_detached_cms(softhsm_token, tmp_path):
     assert input_file.read_bytes() == b"arbitrary \x00\x01\x02 any file contents\n"
 
     # Own verifier: integrity holds; no trust anchors -> INDETERMINATE.
-    # (The fixture's signing cert is not a real chain to a trustable root — same
+    # (The fixture's signing cert is not a real chain to a trustable root, the same
     # reason the XAdES integration test verifies the signature only. The VALID
     # trust-chain path is covered by the self-signed cert in tests/test_cms.py.)
     from cedula_uy_pdf_sign.cms_verify import verify_cms
@@ -184,22 +184,33 @@ def test_sign_any_batch_signs_all(softhsm_token, tmp_path):
     in_dir = tmp_path / "in"
     out_dir = tmp_path / "out"
     in_dir.mkdir()
+    # Top-level files plus a nested one with the same basename as a top-level file, to
+    # exercise --recursive subdirectory preservation (no collision in the flat output dir).
     names = ["a.bin", "b.dat", "c.txt"]
     for n in names:
         (in_dir / n).write_bytes(f"contents of {n}\n".encode())
+    (in_dir / "sub").mkdir()
+    (in_dir / "sub" / "a.bin").write_bytes(b"nested contents\n")
 
     proc = subprocess.run(
         [sys.executable, "-m", "cedula_uy_pdf_sign", "sign-any-batch",
-         "--input-dir", str(in_dir), "--output-dir", str(out_dir),
+         "--input-dir", str(in_dir), "--output-dir", str(out_dir), "--recursive",
          "--pkcs11-lib", module, "--token-label", TOKEN_LABEL, "--pin-source", "stdin"],
         env=env, input=PIN + "\n", capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
     from cedula_uy_pdf_sign.cms_verify import verify_cms
-    for n in names:
-        out = out_dir / f"{n}.p7s"
+    # Each output mirrors the input's relative path; the nested a.bin does not clobber the
+    # top-level a.bin.
+    outputs = {
+        "a.bin": out_dir / "a.bin.p7s",
+        "b.dat": out_dir / "b.dat.p7s",
+        "c.txt": out_dir / "c.txt.p7s",
+        "sub/a.bin": out_dir / "sub" / "a.bin.p7s",
+    }
+    for rel, out in outputs.items():
         assert out.exists(), f"missing {out}"
-        res = verify_cms((in_dir / n).read_bytes(), out.read_bytes(), trust_roots=None)
+        res = verify_cms((in_dir / rel).read_bytes(), out.read_bytes(), trust_roots=None)
         assert res.indication == "INDETERMINATE"
         assert all(c.ok for c in res.checks), [(c.name, c.detail) for c in res.checks if not c.ok]

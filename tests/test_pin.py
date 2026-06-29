@@ -39,3 +39,11 @@ class TestGetPinStdin:
     def test_strips_trailing_newlines(self, monkeypatch, raw, expected):
         monkeypatch.setattr("sys.stdin", io.StringIO(raw))
         assert get_pin(PinSource.stdin, env_var=None, fd=None) == expected
+
+
+class TestGetPinEmpty:
+    @pytest.mark.parametrize("raw", ["\n", "\r\n", ""])  # blank line / CRLF / EOF
+    def test_empty_pin_from_stdin_raises(self, monkeypatch, raw):
+        monkeypatch.setattr("sys.stdin", io.StringIO(raw))
+        with pytest.raises(RuntimeError, match="Empty PIN"):
+            get_pin(PinSource.stdin, env_var=None, fd=None)

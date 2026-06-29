@@ -157,7 +157,7 @@ def select_certificate(
 
     if no_key_candidates:
         typer.secho(
-            f"Warning: {len(no_key_candidates)} certificate(s) skipped — no matching private key in token.",
+            f"Warning: {len(no_key_candidates)} certificate(s) skipped, no matching private key in token.",
             fg=typer.colors.YELLOW,
             err=True,
         )

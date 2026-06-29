@@ -32,8 +32,8 @@ class VerifyResult:
 
 # pyHanko logs a full traceback at WARNING when it cannot build a trust path during CMS or
 # PDF validation (both go through ``pyhanko.sign.validation.generic_cms``). That is an
-# *expected* outcome — no trust anchors (--no-trust / no cached CAs) or a chain that does not
-# reach a trusted root — which the verifiers already surface cleanly as INDETERMINATE via the
+# *expected* outcome: no trust anchors (--no-trust / no cached CAs) or a chain that does not
+# reach a trusted root, which the verifiers already surface cleanly as INDETERMINATE via the
 # per-check breakdown. Keep that traceback out of the user's terminal.
 _PYHANKO_PATH_LOGGER = "pyhanko.sign.validation.generic_cms"
 

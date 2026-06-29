@@ -5,7 +5,7 @@
 
 Completes the AdES triad next to PAdES (PDF) and XAdES (XML): sign *any* file with
 the cédula, producing a detached ``.p7s`` (RFC 5652 CMS, CAdES-BES profile). The
-signature is **detached** — the original file is left untouched and the signature
+signature is **detached**: the original file is left untouched and the signature
 lives in the ``.p7s``. It carries RSA-SHA256 plus the ``signing-certificate-v2``
 signed attribute (the CAdES marker, the CMS counterpart of the XAdES
 SigningCertificate).

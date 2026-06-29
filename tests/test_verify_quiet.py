@@ -1,7 +1,7 @@
 """Regression tests: CMS and PDF verification stay quiet on chain-building failure.
 
 pyHanko logs a full traceback at WARNING (on the ``pyhanko.sign.validation.generic_cms``
-logger) when it cannot build a trust path — an expected outcome with no/untrusted anchors,
+logger) when it cannot build a trust path, an expected outcome with no/untrusted anchors,
 already surfaced cleanly as INDETERMINATE through the per-check breakdown. ``verify_cms`` and
 ``verify_pdf`` wrap that path in ``muted_path_building_warnings`` so the traceback never
 reaches the user's terminal. These tests lock that in (verify-xml is not affected: it does

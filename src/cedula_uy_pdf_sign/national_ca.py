@@ -1,32 +1,38 @@
 # Copyright 2026 Carlos Andrés Planchón Prestes
 # Licensed under the Apache License, Version 2.0
 
-"""Uruguayan national PKI trust anchors for verification (fetch + pin, not bundled).
+"""Uruguayan national PKI trust anchors for verification.
 
-The state CA certificates are NOT redistributed with this package. Only the expected
-SHA-256 fingerprints of the national root and the Ministerio del Interior intermediate
-are pinned here (hashes, not the certificates). `fetch_cas()` downloads the certificates
-from public sources, verifies each against its pinned fingerprint, and caches them per
-user. Verification then uses the cached certificates, or a user-supplied bundle
-(``--ca-file``).
+The package bundles the **public** national CA certificates (the AGESIC root + the Ministerio
+del Interior intermediate) under ``data/``, so chain validation works offline out of the box;
+see ``data/PROVENANCE.md``. Every certificate (bundled, cached, downloaded, or user-supplied
+via ``--from-file`` / ``--ca-file``) is matched against a pinned SHA-256 fingerprint (and the
+intermediate is checked to be signed by the root), so the origin of the bytes never matters: a
+wrong or tampered certificate is rejected.
 
-Because every certificate is matched against a pinned fingerprint (and the intermediate
-is additionally checked to be signed by the pinned root), the trustworthiness of the
-download source does not matter — a wrong or tampered byte stream is rejected. This lets
-the intermediate fall back to a Certificate Transparency mirror (crt.sh), since the MI's
-own repository (``ca.minterior.gub.uy``) has been decommissioned and now returns HTTP 501.
+``fetch_cas()`` refreshes a per-user cache from public sources (with a Certificate Transparency
+fallback, since the MI's own repository ``ca.minterior.gub.uy`` has been decommissioned and now
+returns HTTP 501). The bundled copies are the built-in fallback used when there is no cache and
+no ``--ca-file``.
 """
 
 import hashlib
+import importlib.resources
 import os
+import random
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable, Optional
+from urllib.parse import urlparse
 
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.serialization import Encoding
+
+# Called with a human-readable status line while fetching (retry / source fallback).
+Progress = Callable[[str], None]
 
 # Pinned SHA-256 of each certificate (DER) -- fingerprints, not the certificates.
 ACRN_SHA256 = "5533a0401f612c688ebce5bf53f2ec14a734eb178bfae00e50e85dae6723078a"
@@ -64,17 +70,82 @@ def _fingerprint(cert: x509.Certificate) -> str:
     return hashlib.sha256(cert.public_bytes(Encoding.DER)).hexdigest()
 
 
-# HTTP statuses worth retrying (transient). 501 (the decommissioned MI server) is NOT
-# here: it is a permanent "not served", so we fail fast and move to the next source.
-_RETRYABLE_STATUS = frozenset({408, 429, 500, 502, 503, 504})
-_RETRIES = 3
+def _certs_from_files(paths: Optional[list]) -> dict:
+    """Map sha256(DER) -> certificate for every cert found in the given PEM/DER files.
+
+    Used to seed `fetch_cas` from local files: a supplied cert is only ever used if its
+    fingerprint matches a pin, so a wrong file simply falls through to downloading.
+    """
+    found: dict = {}
+    for p in paths or []:
+        path = Path(p)
+        data = path.read_bytes()
+        certs: list = []
+        try:
+            certs = list(x509.load_pem_x509_certificates(data))
+        except Exception:
+            certs = []
+        if not certs:
+            try:
+                certs = [x509.load_der_x509_certificate(data)]
+            except Exception as exc:
+                raise RuntimeError(f"--from-file '{path}' is not a PEM/DER certificate: {exc}")
+        for c in certs:
+            found[_fingerprint(c)] = c
+    return found
 
 
-def _download(url: str, timeout: int = 30, retries: int = _RETRIES) -> bytes:
-    """Download `url`, retrying transient failures (crt.sh behind Cloudflare flakes with
-    intermittent 5xx / timeouts). Non-retryable HTTP errors (e.g. 404/501) raise at once."""
+# Transport-level retry. crt.sh sits behind Cloudflare and flakes with intermittent
+# 5xx / connection resets / timeouts, so transient failures are retried with exponential
+# backoff + jitter (honouring a Retry-After header when the server sends one). 501 (the
+# decommissioned MI server) is a permanent "not served": it is not retried, so we fall
+# through to the next source at once.
+_RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
+_RETRIES = 4
+_BACKOFF_BASE = 1.0       # seconds; doubles each attempt
+_BACKOFF_CAP = 10.0       # seconds; max single wait from backoff
+_MAX_RETRY_AFTER = 30.0   # cap an over-large Retry-After
+
+# Called before each retry wait: (url, attempt, total_attempts, exception, wait_seconds).
+RetryHook = Callable[[str, int, int, Exception, float], None]
+# Called when a source is exhausted and the next is tried: (failed_url, next_url, exception).
+SourceFailHook = Callable[[str, str, Exception], None]
+
+
+def _retry_after_seconds(exc: urllib.error.HTTPError) -> Optional[float]:
+    """Delta-seconds from a Retry-After header, if present and sane. The HTTP-date form is
+    not honoured (returns None, falling back to backoff)."""
+    try:
+        raw = exc.headers.get("Retry-After") if exc.headers else None
+    except Exception:
+        return None
+    if not raw:
+        return None
+    try:
+        secs = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return min(secs, _MAX_RETRY_AFTER) if secs >= 0 else None
+
+
+def _backoff_delay(attempt: int) -> float:
+    """Exponential backoff (~1, 2, 4, 8 … capped) plus up to 0.5s of jitter."""
+    base = min(_BACKOFF_CAP, _BACKOFF_BASE * (2 ** attempt))
+    return base + random.uniform(0.0, 0.5)
+
+
+def _download(
+    url: str,
+    timeout: int = 30,
+    retries: int = _RETRIES,
+    on_retry: Optional[RetryHook] = None,
+) -> bytes:
+    """Download `url`, retrying transient failures with exponential backoff (and a server
+    Retry-After when offered). Non-retryable HTTP errors (e.g. 404/501) raise immediately.
+    `on_retry` is invoked just before each wait."""
     last_exc: Exception = RuntimeError("no attempt made")
     for attempt in range(retries):
+        retry_after: Optional[float] = None
         try:
             req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (pinned by fingerprint)
@@ -83,33 +154,85 @@ def _download(url: str, timeout: int = 30, retries: int = _RETRIES) -> bytes:
             last_exc = exc
             if exc.code not in _RETRYABLE_STATUS:
                 raise
+            retry_after = _retry_after_seconds(exc)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             last_exc = exc
         if attempt < retries - 1:
-            time.sleep(1.5 * (attempt + 1))
+            delay = retry_after if retry_after is not None else _backoff_delay(attempt)
+            if on_retry is not None:
+                on_retry(url, attempt + 1, retries, last_exc, delay)
+            time.sleep(delay)
     raise last_exc
 
 
-def _download_first(urls: tuple[str, ...], timeout: int = 30) -> bytes:
+def _download_first(
+    urls: tuple[str, ...],
+    timeout: int = 30,
+    on_retry: Optional[RetryHook] = None,
+    on_source_fail: Optional[SourceFailHook] = None,
+) -> bytes:
     """Download from the first URL that responds; raise if all of them fail.
 
     Safe to try multiple sources because the caller pins the certificate fingerprint:
     the bytes are accepted only if they hash to the expected value.
     """
     errors = []
-    for url in urls:
+    for i, url in enumerate(urls):
         try:
-            return _download(url, timeout=timeout)
+            return _download(url, timeout=timeout, on_retry=on_retry)
         except Exception as exc:  # noqa: BLE001 (collect and report all source failures)
             errors.append(f"  {url}: {type(exc).__name__}: {exc}")
+            if on_source_fail is not None and i + 1 < len(urls):
+                on_source_fail(url, urls[i + 1], exc)
     raise RuntimeError("Could not download the certificate from any source:\n" + "\n".join(errors))
 
 
-def fetch_cas() -> tuple[Path, Path]:
-    """Download root + intermediate, verify each against its pinned fingerprint (and the
+def _host(url: str) -> str:
+    return urlparse(url).hostname or url
+
+
+def _short_error(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, TimeoutError):
+        return "timed out"
+    if isinstance(exc, urllib.error.URLError):
+        return f"{type(exc).__name__}: {exc.reason}"
+    return type(exc).__name__
+
+
+def fetch_cas(
+    progress: Optional[Progress] = None,
+    source_files: Optional[list] = None,
+) -> tuple[Path, Path]:
+    """Obtain root + intermediate, verify each against its pinned fingerprint (and the
     intermediate against the root), and cache them. Returns (acrn_path, mica_path).
-    Raises on fingerprint mismatch."""
-    acrn = _load_cert(_download(ACRN_URL))
+    Raises on fingerprint mismatch.
+
+    Certificates whose fingerprint matches a pin are taken from ``source_files`` (PEM/DER)
+    when supplied; whatever is not provided there is downloaded. This lets a user seed the
+    cache offline when a source is unreachable (e.g. the decommissioned MI server). The
+    fingerprint pin makes the origin irrelevant. ``progress``, if given, receives
+    human-readable status lines as sources are used, retried or fall back."""
+    local = _certs_from_files(source_files)
+
+    def _note(msg: str) -> None:
+        if progress:
+            progress(msg)
+
+    def on_retry(url: str, attempt: int, total: int, exc: Exception, delay: float) -> None:
+        _note(f"{_host(url)}: attempt {attempt}/{total} failed "
+              f"({_short_error(exc)}); retrying in {delay:.1f}s…")
+
+    def on_source_fail(failed: str, nxt: str, exc: Exception) -> None:
+        _note(f"{_host(failed)} unavailable ({_short_error(exc)}); "
+              f"falling back to {_host(nxt)}…")
+
+    if ACRN_SHA256 in local:
+        acrn = local[ACRN_SHA256]
+        _note("national root: using supplied file (fingerprint matches the pin)")
+    else:
+        acrn = _load_cert(_download(ACRN_URL, on_retry=on_retry))
     got = _fingerprint(acrn)
     if got != ACRN_SHA256:
         raise RuntimeError(
@@ -118,7 +241,13 @@ def fetch_cas() -> tuple[Path, Path]:
             "The pinned fingerprint may be outdated or the download was tampered."
         )
 
-    mica = _load_cert(_download_first(MICA_URLS))
+    if MICA_SHA256 in local:
+        mica = local[MICA_SHA256]
+        _note("Ministerio del Interior intermediate: using supplied file (fingerprint matches the pin)")
+    else:
+        if source_files:
+            _note("supplied file(s) did not contain the pinned MI intermediate; downloading…")
+        mica = _load_cert(_download_first(MICA_URLS, on_retry=on_retry, on_source_fail=on_source_fail))
     got_mica = _fingerprint(mica)
     if got_mica != MICA_SHA256:
         raise RuntimeError(
@@ -143,18 +272,41 @@ def fetch_cas() -> tuple[Path, Path]:
     return acrn_path, mica_path
 
 
+def _bundled_cert(filename: str, expected_fp: str) -> Optional[x509.Certificate]:
+    """Load a certificate shipped under ``data/``, returning it only if it matches the pin."""
+    try:
+        data = (importlib.resources.files("cedula_uy_pdf_sign") / "data" / filename).read_bytes()
+        cert = _load_cert(data)
+    except Exception:
+        return None
+    return cert if _fingerprint(cert) == expected_fp else None
+
+
+def load_bundled_trust_anchors() -> tuple[list, list]:
+    """Return (roots, intermediates) bundled with the package: the public national CA certs,
+    each re-checked against its pinned fingerprint. Returns ([], []) if the bundled root is
+    missing or fails the pin. Used as the built-in fallback so verification works offline."""
+    root = _bundled_cert("acrn.pem", ACRN_SHA256)
+    if root is None:
+        return [], []
+    mica = _bundled_cert("mica.pem", MICA_SHA256)
+    return [root], ([mica] if mica is not None else [])
+
+
 def load_cached_trust_anchors() -> tuple[list, list]:
-    """Return (roots, intermediates) from the local cache, re-checking the pinned
-    fingerprint of the root. Returns ([], []) if the cache is empty or fails the pin."""
+    """Return (roots, intermediates) from the local cache, re-checking **both** pinned
+    fingerprints. Returns ([], []) if the cache is missing, incomplete, unreadable or fails a
+    pin, so callers fall back to the bundled anchors instead of failing."""
     d = cache_dir()
     acrn_path = d / "acrn.pem"
-    if not acrn_path.exists():
-        return [], []
-    acrn = x509.load_pem_x509_certificate(acrn_path.read_bytes())
-    if _fingerprint(acrn) != ACRN_SHA256:
-        return [], []  # cache tampered/outdated -> treat as absent
-    intermediates = []
     mica_path = d / "mica.pem"
-    if mica_path.exists():
-        intermediates.append(x509.load_pem_x509_certificate(mica_path.read_bytes()))
-    return [acrn], intermediates
+    if not (acrn_path.exists() and mica_path.exists()):
+        return [], []
+    try:
+        acrn = x509.load_pem_x509_certificate(acrn_path.read_bytes())
+        mica = x509.load_pem_x509_certificate(mica_path.read_bytes())
+    except Exception:
+        return [], []  # corrupt cache -> treat as absent
+    if _fingerprint(acrn) != ACRN_SHA256 or _fingerprint(mica) != MICA_SHA256:
+        return [], []  # tampered/outdated -> treat as absent
+    return [acrn], [mica]

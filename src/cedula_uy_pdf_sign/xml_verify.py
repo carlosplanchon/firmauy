@@ -16,6 +16,7 @@ canonicalize exactly like signing, so there is a single source of truth.
 """
 
 import base64
+import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Optional
@@ -86,6 +87,33 @@ def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+def _verify_timestamp(sig) -> Optional[Check]:
+    """If a XAdES-T <SignatureTimeStamp> is present, check that its RFC 3161 token binds to the
+    signature: its messageImprint must equal the digest of the canonicalized <ds:SignatureValue>.
+    Reports genTime. Returns None for a plain XAdES-BES signature (no timestamp).
+
+    This confirms the timestamp covers *this* signature; it does not validate the TSA's own
+    certificate chain (no trusted timestamping list is consulted)."""
+    from asn1crypto import cms as asn1cms
+
+    ets = sig.find(f".//{_xades('SignatureTimeStamp')}/{_xades('EncapsulatedTimeStamp')}")
+    if ets is None or not ets.text:
+        return None
+    try:
+        token_der = base64.b64decode(re.sub(r"\s+", "", ets.text))
+        tst_info = asn1cms.ContentInfo.load(token_der)["content"]["encap_content_info"]["content"].parsed
+        mi = tst_info["message_imprint"]
+        algo = mi["hash_algorithm"]["algorithm"].native
+        sv = sig.find(_ds("SignatureValue"))
+        expected = hashlib.new(algo, _c14n(sv)).digest()
+        gen_time = tst_info["gen_time"].native
+    except Exception as exc:
+        return Check("signature timestamp (XAdES-T)", False, f"could not parse timestamp: {str(exc)[:80]}")
+    if mi["hashed_message"].native == expected:
+        return Check("signature timestamp (XAdES-T)", True, f"genTime {gen_time.isoformat()}")
+    return Check("signature timestamp (XAdES-T)", False, "timestamp does not match the signature value")
+
+
 def verify_xml(
     xml_bytes: bytes,
     *,
@@ -140,6 +168,11 @@ def verify_xml(
     if cd is not None:
         ok = (cd.text or "").strip() == _sha256_b64(cert_der)
         checks.append(Check("SigningCertificate binding", ok))
+
+    # XAdES-T: validate the signature timestamp if present (no-op for plain XAdES-BES).
+    ts_check = _verify_timestamp(sig)
+    if ts_check is not None:
+        checks.append(ts_check)
 
     level1_ok = all(c.ok for c in checks)
 

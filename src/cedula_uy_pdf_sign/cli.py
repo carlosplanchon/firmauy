@@ -817,8 +817,9 @@ def _sign_one_xml(
     signer,
     signing_time: datetime,
     overwrite: bool,
+    timestamper=None,
 ) -> None:
-    """Sign a single XML (XAdES-BES, enveloped). Raises on any error."""
+    """Sign a single XML (XAdES-BES, or XAdES-T with a timestamper). Raises on any error."""
     if output_xml.exists() and not overwrite:
         raise RuntimeError(
             f"Output file already exists: {output_xml}\n"
@@ -830,6 +831,7 @@ def _sign_one_xml(
         cert=cert,
         signer=signer,
         signing_time=signing_time,
+        timestamper=timestamper,
     )
     output_xml.write_bytes(signed)
 
@@ -902,11 +904,15 @@ def sign_xml_cmd(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     timezone: TimezoneOpt = DEFAULT_TIMEZONE,
+    tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
 ) -> None:
-    """Sign an XML document with a Uruguayan cédula (XAdES-BES, enveloped)."""
+    """Sign an XML document with a Uruguayan cédula (XAdES-BES, or XAdES-T with --tsa-url)."""
     if output_xml is None:
         output_xml = input_xml.with_stem(input_xml.stem + "_firmado")
     try:
@@ -921,6 +927,10 @@ def sign_xml_cmd(
                 "Use --overwrite to overwrite it."
             )
         ensure_output_parent(output_xml)
+
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
+        )
 
         lib = load_pkcs11_lib(pkcs11_lib)
         token = find_token(lib, token_label)
@@ -939,7 +949,7 @@ def sign_xml_cmd(
                 issuer_name=issuer_name,
                 key_id=key_id,
                 cert_serial=cert_serial,
-                tsa_url=None,
+                tsa_url=tsa_url,
                 quiet=quiet,
             )
 
@@ -950,6 +960,7 @@ def sign_xml_cmd(
                 signer=_make_raw_signer(session, key_id),
                 signing_time=datetime.now(ZoneInfo(timezone)),
                 overwrite=overwrite,
+                timestamper=timestamper,
             )
 
         if verify:
@@ -987,12 +998,19 @@ def sign_xml_batch(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     timezone: TimezoneOpt = DEFAULT_TIMEZONE,
+    tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
 ) -> None:
-    """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, enveloped)."""
+    """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, or XAdES-T with --tsa-url)."""
     try:
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
+        )
         all_xmls: List[Path] = list(input_xmls) if input_xmls else []
 
         if input_dir is not None:
@@ -1034,7 +1052,7 @@ def sign_xml_batch(
                 issuer_name=issuer_name,
                 key_id=key_id,
                 cert_serial=cert_serial,
-                tsa_url=None,
+                tsa_url=tsa_url,
                 quiet=quiet,
             )
             typer.echo(f"Files to sign:       {len(all_xmls)}")
@@ -1055,6 +1073,7 @@ def sign_xml_batch(
                         signer=raw_signer,
                         signing_time=datetime.now(ZoneInfo(timezone)),
                         overwrite=overwrite,
+                        timestamper=timestamper,
                     )
                     if verify:
                         _verify_after_xml(output_xml)

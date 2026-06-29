@@ -17,9 +17,10 @@ Sign and verify PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) locall
 
 ```bash
 uv tool install cedula-uy-pdf-sign     # install
-firmauy list-tokens                    # verify the card is detected
-firmauy sign-pdf input.pdf                 # sign -> input_firmado.pdf (prompts for the PIN)
-firmauy verify-pdf input_firmado.pdf       # verify (offline, chain to the national root)
+firmauy doctor                         # check the setup (pcscd, PKCS#11 module, card, CAs)
+firmauy list-tokens                    # confirm the card is detected
+firmauy sign-pdf input.pdf             # sign -> input_firmado.pdf (prompts for the PIN)
+firmauy verify input_firmado.pdf       # verify (auto-detects format; offline chain check)
 ```
 
 ## Overview
@@ -30,13 +31,25 @@ The CLI tool is invoked as `firmauy` and supports:
 
 - signing individual PDF documents
 - batch-signing multiple PDFs with a single PKCS#11 session
-- signing XML documents, individually or in batch (XAdES-BES, enveloped)
+- signing XML documents, individually or in batch (XAdES-BES, or XAdES-T with `--tsa-url`; enveloped)
 - signing arbitrary files, individually or in batch (CAdES-BES detached `.p7s`, CMS/PKCS#7)
 - verifying signed PDF, XML and detached `.p7s` files locally, with chain validation to the national root
 - configuring the visible signature position
 - selecting the signature page
 - discovering available PKCS#11 tokens and certificates
 - non-interactive PIN sources for controlled automation workflows
+
+## Supported signature formats
+
+| Format | Command | Output | Verification | Timestamping |
+|---|---|---|---|---|
+| PDF / PAdES | `sign-pdf` | signed `.pdf` | `verify-pdf` / `verify` | optional (TSA) |
+| XML / XAdES | `sign-xml` | signed `.xml` | `verify-xml` / `verify` | optional (TSA) |
+| Any file / CAdES | `sign-any` | detached `.p7s` | `verify-any` / `verify` | optional (TSA) |
+
+The full AdES triad (PAdES / XAdES / CAdES), signed locally with the cédula and verifiable with
+standard validators; local verification anchors the chain to the Uruguayan national root. Each
+command has a batch variant (`sign-pdf-batch`, `sign-xml-batch`, `sign-any-batch`).
 
 ## Requirements
 
@@ -216,10 +229,11 @@ Choose the source by security context (most to least contained):
 
 ### Timestamping (TSA, optional)
 
-Embed a trusted timestamp from a Time Stamping Authority (RFC 3161), available on `sign-pdf`, `sign-pdf-batch`, `sign-any` and `sign-any-batch` (producing the **-T** level: PAdES-T / CAdES-T):
+Embed a trusted timestamp from a Time Stamping Authority (RFC 3161), available on every signing command (`sign-pdf`, `sign-xml`, `sign-any` and their `*-batch` variants), producing the **-T** level (PAdES-T / XAdES-T / CAdES-T):
 
 ```bash
 firmauy sign-pdf input.pdf output_signed.pdf --tsa-url https://your-tsa/endpoint
+firmauy sign-xml document.xml --tsa-url https://your-tsa/endpoint   # XAdES-T
 firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint   # CAdES-T
 ```
 
@@ -288,7 +302,8 @@ If the output path is omitted, the signed file is saved as `<input>_firmado.xml`
 
 Token discovery, certificate selection and PIN handling work exactly like the PDF commands, so
 the same options apply: `--token-label`, `--cert-id`, `--pin-source` (with `--pin-env-var` /
-`--pin-fd`), `--timezone` and `--overwrite`.
+`--pin-fd`), `--timezone`, `--tsa-url` (adds an XAdES-T timestamp, see
+[Timestamping](#timestamping-tsa-optional)) and `--overwrite`.
 
 ```bash
 # Non-interactive PIN, same as the PDF commands
@@ -297,8 +312,8 @@ echo "1234" | firmauy sign-xml input.xml output_signed.xml --pin-source stdin
 
 Signature profile produced:
 
-- **Format:** XAdES-BES, enveloped; the `<ds:Signature>` is appended as the last child of the
-  document root, with a single reference over the whole document (`URI=""`).
+- **Format:** XAdES-BES (or XAdES-T with `--tsa-url`), enveloped; the `<ds:Signature>` is appended
+  as the last child of the document root, with a single reference over the whole document (`URI=""`).
 - **Canonicalization:** inclusive C14N 1.0 (`REC-xml-c14n-20010315`).
 - **Algorithms:** RSA-SHA256 signature, SHA-256 digests.
 - **Signed properties:** signing time, signing-certificate digest and data-object format.

@@ -153,17 +153,42 @@ def _build_signature(root, cert: x509.Certificate, signing_time: datetime) -> di
             "refp_dv": refp_dv, "sv": sv}
 
 
+def _add_signature_timestamp(sig, sv, timestamper) -> None:
+    """Add a XAdES-T <SignatureTimeStamp> over the canonicalized <ds:SignatureValue>.
+
+    The timestamp lives in UnsignedProperties: it is computed over the SignatureValue, so it
+    cannot be covered by the main signature. `timestamper` is a pyHanko TimeStamper; it returns
+    an RFC 3161 token (asn1crypto ContentInfo) that is DER-encoded into EncapsulatedTimeStamp."""
+    import asyncio
+
+    digest = hashlib.sha256(_c14n(sv)).digest()
+    token = asyncio.run(timestamper.async_timestamp(digest, "sha256"))
+
+    qp = sig.find(f"{_ds('Object')}/{_xades('QualifyingProperties')}")
+    up = etree.SubElement(qp, _xades("UnsignedProperties"))
+    usp = etree.SubElement(up, _xades("UnsignedSignatureProperties"))
+    sts = etree.SubElement(usp, _xades("SignatureTimeStamp"))
+    etree.SubElement(sts, _ds("CanonicalizationMethod")).set("Algorithm", ALG_C14N)
+    etree.SubElement(sts, _xades("EncapsulatedTimeStamp")).text = _wrap_b64(token.dump())
+    for elem in (up, usp, sts):
+        _nl_block(elem)
+
+
 def sign_xml(
     xml_bytes: bytes,
     *,
     cert: x509.Certificate,
     signer: RawSigner,
     signing_time: datetime,
+    timestamper=None,
 ) -> bytes:
     """Produce a XAdES-BES enveloped signature over `xml_bytes`.
 
     `signer` receives the canonical SignedInfo and must return the raw RSA-SHA256
     signature (the PKCS#11 SHA256_RSA_PKCS mechanism, i.e. hash + sign).
+
+    With `timestamper` (a pyHanko TimeStamper), a XAdES-T SignatureTimeStamp is added over the
+    SignatureValue, upgrading the result from XAdES-BES to XAdES-T.
     Returns the signed XML as UTF-8 bytes.
     """
     root = etree.fromstring(xml_bytes)
@@ -175,6 +200,10 @@ def sign_xml(
 
     # Phase 2: sign the canonical SignedInfo on the token.
     p["sv"].text = _wrap_b64(signer(_c14n(p["si"])))
+
+    # Optional XAdES-T: a trusted RFC 3161 timestamp over the SignatureValue.
+    if timestamper is not None:
+        _add_signature_timestamp(p["sig"], p["sv"], timestamper)
 
     body = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
     return XML_DECLARATION + body

@@ -68,6 +68,30 @@ app = typer.Typer(
 )
 
 
+def _version_callback(value: bool) -> None:
+    if value:
+        from importlib.metadata import PackageNotFoundError, version
+        try:
+            v = version("cedula-uy-pdf-sign")
+        except PackageNotFoundError:
+            v = "unknown (not installed)"
+        typer.echo(f"firmauy {v}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--version", callback=_version_callback, is_eager=True,
+            help="Show the version and exit.",
+        ),
+    ] = None,
+) -> None:
+    pass
+
+
 # ---------------------------------------------------------------------------
 # Error formatting
 # ---------------------------------------------------------------------------

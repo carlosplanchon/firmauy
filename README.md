@@ -113,6 +113,7 @@ The CLI tool is invoked as `firmauy`.
 Use `--help` on any command to see all available options:
 
 ```bash
+firmauy --version            # print the installed version
 firmauy --help
 firmauy sign-pdf --help
 firmauy sign-pdf-batch --help

@@ -47,10 +47,13 @@ from cedula_uy_pdf_sign.national_ca import cache_dir, fetch_cas, load_cached_tru
 from cedula_uy_pdf_sign.pdf_verify import verify_pdf
 from cedula_uy_pdf_sign.xml_sign import sign_xml
 from cedula_uy_pdf_sign.xml_verify import verify_xml
+from cedula_uy_pdf_sign.cms_sign import sign_cms_detached
+from cedula_uy_pdf_sign.cms_verify import verify_cms
 
 app = typer.Typer(
     help=(
-        "Sign and verify PDF (PAdES) and XML (XAdES) documents with the Uruguayan ID card (cédula) via PKCS#11.\n\n"
+        "Sign and verify PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) "
+        "with the Uruguayan ID card (cédula) via PKCS#11.\n\n"
         "Runs locally by default: no data is transmitted externally.\n"
         "(Note: TSA usage may involve external connections depending on configuration.)\n\n"
         "This project is not affiliated with or endorsed by AGESIC. "
@@ -691,6 +694,30 @@ def _sign_one_xml(
 
 
 # ---------------------------------------------------------------------------
+# CMS / CAdES signing helper (shared by sign-any and sign-any-batch)
+# ---------------------------------------------------------------------------
+
+def _sign_one_cms(
+    *,
+    input_file: Path,
+    output_p7s: Path,
+    pkcs11_signer: "PKCS11Signer",
+    timestamper,
+    overwrite: bool,
+) -> None:
+    """Sign a single file as a detached CAdES-BES ``.p7s``. Raises on any error."""
+    if output_p7s.exists() and not overwrite:
+        raise RuntimeError(
+            f"Output file already exists: {output_p7s}\n"
+            "Use --overwrite to overwrite it."
+        )
+    ensure_output_parent(output_p7s)
+    with input_file.open("rb") as f:
+        p7s = sign_cms_detached(f, signer=pkcs11_signer, timestamper=timestamper)
+    output_p7s.write_bytes(p7s)
+
+
+# ---------------------------------------------------------------------------
 # Subcommand: sign-xml
 # ---------------------------------------------------------------------------
 
@@ -873,6 +900,206 @@ def sign_xml_batch(
 
 
 # ---------------------------------------------------------------------------
+# Subcommand: sign-any
+# ---------------------------------------------------------------------------
+
+@app.command("sign-any")
+def sign_any(
+    input_file: Path = typer.Argument(..., exists=True, readable=True, dir_okay=False, help="File to sign (any type)."),
+    output_p7s: Optional[Path] = typer.Argument(None, help="Detached signature output. Default: <input>.p7s"),
+    pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
+    token_label: TokenLabelOpt = None,
+    cert_id: CertIdOpt = None,
+    pin_source: PinSourceOpt = PinSource.prompt,
+    pin_env_var: PinEnvVarOpt = None,
+    pin_fd: PinFdOpt = None,
+    tsa_url: TsaUrlOpt = None,
+    overwrite: OverwriteOpt = False,
+    quiet: QuietOpt = False,
+) -> None:
+    """Sign any file with a Uruguayan cédula, producing a detached CAdES-BES
+    signature (.p7s, CMS/PKCS#7). The original file is left untouched."""
+    if output_p7s is None:
+        output_p7s = input_file.with_name(input_file.name + ".p7s")
+    try:
+        if input_file.resolve() == output_p7s.resolve():
+            raise RuntimeError(
+                "Input and output files are the same. "
+                "Specify a different output path."
+            )
+
+        # Fail-fast before prompting for the PIN. _sign_one_cms re-checks this right
+        # before writing (the authoritative guard, also used by sign-any-batch).
+        if output_p7s.exists() and not overwrite:
+            raise RuntimeError(
+                f"Output file already exists: {output_p7s}\n"
+                "Use --overwrite to overwrite it."
+            )
+
+        lib = load_pkcs11_lib(pkcs11_lib)
+        token = find_token(lib, token_label)
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+
+        with token.open(user_pin=final_pin) as session:
+            key_id, cert = select_certificate(session, cert_id)
+
+            signer_name = get_common_name(cert.subject)
+            issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
+            cert_serial = format(cert.serial_number, "X")
+            token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
+            _print_signing_info(
+                token_label_display=token_label_display,
+                signer_name=signer_name,
+                issuer_name=issuer_name,
+                key_id=key_id,
+                cert_serial=cert_serial,
+                tsa_url=tsa_url,
+                quiet=quiet,
+            )
+
+            pkcs11_signer = PKCS11Signer(
+                pkcs11_session=session,
+                cert_id=key_id,
+                key_id=key_id,
+            )
+            timestamper = HTTPTimeStamper(tsa_url) if tsa_url else None
+
+            _sign_one_cms(
+                input_file=input_file,
+                output_p7s=output_p7s,
+                pkcs11_signer=pkcs11_signer,
+                timestamper=timestamper,
+                overwrite=overwrite,
+            )
+
+        typer.secho(f"File signed successfully: {output_p7s}", fg=typer.colors.GREEN)
+
+    except Exception as exc:
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: sign-any-batch
+# ---------------------------------------------------------------------------
+
+@app.command("sign-any-batch")
+def sign_any_batch(
+    input_files: Optional[List[Path]] = typer.Argument(None, help="Files to sign (any type)."),
+    output_dir: Path = typer.Option(..., "--output-dir", help="Directory where .p7s signatures will be saved."),
+    input_dir: Optional[Path] = typer.Option(
+        None, "--input-dir",
+        help="Folder of files to sign. Can be combined with positional arguments.",
+    ),
+    glob: str = typer.Option(
+        "*", "--glob",
+        help="Glob pattern selecting files in --input-dir (e.g. '*.zip'). Default: all files.",
+    ),
+    recursive: bool = typer.Option(
+        False, "--recursive",
+        help="Recursively search for files in --input-dir.",
+    ),
+    pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
+    token_label: TokenLabelOpt = None,
+    cert_id: CertIdOpt = None,
+    pin_source: PinSourceOpt = PinSource.prompt,
+    pin_env_var: PinEnvVarOpt = None,
+    pin_fd: PinFdOpt = None,
+    tsa_url: TsaUrlOpt = None,
+    overwrite: OverwriteOpt = False,
+    quiet: QuietOpt = False,
+) -> None:
+    """Sign multiple files with a single PKCS#11 session (detached CAdES-BES .p7s).
+
+    Each output is named ``<input-name>.p7s`` inside --output-dir."""
+    try:
+        all_files: List[Path] = list(input_files) if input_files else []
+
+        if input_dir is not None:
+            if not input_dir.is_dir():
+                typer.secho(
+                    f"--input-dir '{input_dir}' is not a valid directory.",
+                    fg=typer.colors.RED,
+                    err=True,
+                )
+                raise typer.Exit(code=1)
+            pattern = f"**/{glob}" if recursive else glob
+            all_files += sorted(p for p in input_dir.glob(pattern) if p.is_file())
+
+        if not all_files:
+            typer.secho(
+                "No input files specified. "
+                "Use positional arguments or --input-dir.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        lib = load_pkcs11_lib(pkcs11_lib)
+        token = find_token(lib, token_label)
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+
+        with token.open(user_pin=final_pin) as session:
+            key_id, cert = select_certificate(session, cert_id)
+
+            signer_name = get_common_name(cert.subject)
+            issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
+            cert_serial = format(cert.serial_number, "X")
+            token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
+            _print_signing_info(
+                token_label_display=token_label_display,
+                signer_name=signer_name,
+                issuer_name=issuer_name,
+                key_id=key_id,
+                cert_serial=cert_serial,
+                tsa_url=tsa_url,
+                quiet=quiet,
+            )
+            typer.echo(f"Files to sign:       {len(all_files)}")
+            typer.echo("")
+
+            pkcs11_signer = PKCS11Signer(
+                pkcs11_session=session,
+                cert_id=key_id,
+                key_id=key_id,
+            )
+            timestamper = HTTPTimeStamper(tsa_url) if tsa_url else None
+
+            ok_count = 0
+            err_count = 0
+
+            for input_file in all_files:
+                output_p7s = output_dir / f"{input_file.name}.p7s"
+                try:
+                    _sign_one_cms(
+                        input_file=input_file,
+                        output_p7s=output_p7s,
+                        pkcs11_signer=pkcs11_signer,
+                        timestamper=timestamper,
+                        overwrite=overwrite,
+                    )
+                    typer.secho(f"OK:    {output_p7s}", fg=typer.colors.GREEN)
+                    ok_count += 1
+                except Exception as exc:
+                    typer.secho(f"ERROR: {input_file}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+                    err_count += 1
+
+        typer.echo("")
+        typer.echo(f"Signed: {ok_count}/{len(all_files)}. Errors: {err_count}.")
+
+        if err_count:
+            raise typer.Exit(code=1)
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
 # Verification helpers (shared by verify-xml and verify-pdf)
 # ---------------------------------------------------------------------------
 
@@ -1030,6 +1257,72 @@ def verify_pdf_cmd(
         if overall == "INVALID":
             raise typer.Exit(code=1)
         if overall == "INDETERMINATE":
+            raise typer.Exit(code=2)
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: verify-any
+# ---------------------------------------------------------------------------
+
+@app.command("verify-any")
+def verify_any_cmd(
+    input_file: Path = typer.Argument(..., exists=True, readable=True, dir_okay=False, help="Original file that was signed."),
+    p7s_file: Optional[Path] = typer.Argument(None, help="Detached signature (.p7s). Default: <input>.p7s"),
+    ca_file: Optional[Path] = typer.Option(
+        None, "--ca-file",
+        help="PEM bundle of trust anchors (root + intermediates). "
+             "Defaults to the cached national CAs (see 'firmauy fetch-cas').",
+    ),
+    no_trust: bool = typer.Option(
+        False, "--no-trust",
+        help="Only check signature integrity; skip the certificate chain.",
+    ),
+    check_revocation: bool = typer.Option(
+        False, "--check-revocation",
+        help="Also check certificate revocation via CRL/OCSP. Requires network.",
+    ),
+) -> None:
+    """Verify a detached CAdES/.p7s signature over a file: integrity and (unless
+    --no-trust) the certificate chain up to the Uruguayan national root.
+
+    The original file and its detached signature are both required. Same indication
+    model as verify-xml/verify-pdf (VALID / INDETERMINATE / INVALID).
+    Exit: 0 VALID, 1 INVALID, 2 INDETERMINATE.
+    """
+    if p7s_file is None:
+        p7s_file = input_file.with_name(input_file.name + ".p7s")
+    try:
+        if check_revocation and no_trust:
+            raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+        if not p7s_file.exists():
+            raise RuntimeError(
+                f"Detached signature not found: {p7s_file}\n"
+                "Pass the .p7s path explicitly as the second argument."
+            )
+
+        roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
+
+        result = verify_cms(
+            input_file.read_bytes(),
+            p7s_file.read_bytes(),
+            trust_roots=roots,
+            intermediates=intermediates,
+            check_revocation=check_revocation,
+        )
+
+        _print_verify_result(result)
+        typer.secho(f"Indication: {result.indication}",
+                    fg=_INDICATION_COLOR[result.indication], bold=True)
+
+        if result.indication == "INVALID":
+            raise typer.Exit(code=1)
+        if result.indication == "INDETERMINATE":
             raise typer.Exit(code=2)
 
     except typer.Exit:

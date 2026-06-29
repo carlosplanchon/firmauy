@@ -8,14 +8,14 @@ version = "0.8.0"
 authors = [
   { name = "Carlos A. Planchón", email = "carlosandresplanchonprestes@gmail.com" }
 ]
-description = "Sign and verify PDF (PAdES) and XML (XAdES) documents with a Uruguayan national ID card (cédula) via PKCS#11. Standards-based; not affiliated with AGESIC."
+description = "Sign and verify PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) with a Uruguayan national ID card (cédula) via PKCS#11. Standards-based; not affiliated with AGESIC."
 readme = "README.md"
 requires-python = ">=3.10"
 
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 
-keywords = ["pdf", "xml", "xades", "pades", "pkcs11", "uruguay", "agesic", "cedula", "signature", "electronic"]
+keywords = ["pdf", "xml", "xades", "pades", "cades", "cms", "p7s", "pkcs11", "uruguay", "agesic", "cedula", "signature", "electronic"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",

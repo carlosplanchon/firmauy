@@ -30,7 +30,8 @@ The CLI tool is invoked as `firmauy` and supports:
 - signing individual PDF documents
 - batch-signing multiple PDFs with a single PKCS#11 session
 - signing XML documents, individually or in batch (XAdES-BES, enveloped)
-- verifying signed PDF and XML documents locally, with chain validation to the national root
+- signing arbitrary files, individually or in batch (CAdES-BES detached `.p7s`, CMS/PKCS#7)
+- verifying signed PDF, XML and detached `.p7s` files locally, with chain validation to the national root
 - configuring the visible signature position
 - selecting the signature page
 - discovering available PKCS#11 tokens and certificates
@@ -279,6 +280,67 @@ PIN selection, `--timezone`, `--overwrite`) also apply.
 
 Make sure you have reviewed all documents before signing them in batch.
 
+### Sign any file (CAdES / .p7s)
+
+Sign **any file** — not just PDF or XML — with the cédula, producing a standards-based
+**CAdES-BES detached** signature (RFC 5652 CMS / PKCS#7), following ETSI EN 319 122. This
+completes the AdES triad alongside PAdES (PDF) and XAdES (XML).
+
+```bash
+firmauy sign-any contract.zip
+```
+
+The signature is **detached**: the original file is left untouched and the signature is written
+to a separate `.p7s`. If the output path is omitted, it is saved next to the input as
+`<input-name>.p7s` (e.g. `contract.zip` → `contract.zip.p7s`).
+
+Token discovery, certificate selection and PIN handling work exactly like the PDF/XML commands,
+so the same options apply: `--token-label`, `--cert-id`, `--pin-source` (with `--pin-env-var` /
+`--pin-fd`), `--tsa-url` and `--overwrite`.
+
+```bash
+# Non-interactive PIN, same as the other commands
+echo "1234" | firmauy sign-any contract.zip --pin-source stdin
+```
+
+Signature profile produced:
+
+- **Format:** CAdES-BES, detached (RFC 5652 CMS / PKCS#7); the original bytes are not embedded.
+- **Algorithms:** RSA-SHA256 signature, SHA-256 message digest.
+- **Signed attributes:** content type, message digest and `signing-certificate-v2` (the CMS
+  counterpart of the XAdES SigningCertificate).
+
+It verifies with standard CMS tooling, e.g. `openssl cms -verify -binary -inform DER -in
+contract.zip.p7s -content contract.zip`, or with `firmauy verify-any` (see below).
+
+⚠️ This is the CAdES-**BES** level (no trusted timestamp). Passing `--tsa-url` embeds a trusted
+timestamp (CAdES-T), at the cost of contacting that external TSA. The produced signature is
+cryptographically valid and conforms to the CMS/CAdES standard; legal and regulatory validity
+depends on your use case and applicable rules.
+
+### Sign multiple files (batch)
+
+Sign many files with a single PKCS#11 session (the card PIN is entered only once), mirroring the
+PDF and XML batch commands.
+
+```bash
+# Explicit file list
+firmauy sign-any-batch a.zip b.bin report.docx --output-dir ~/signed
+
+# Whole directory (add --recursive to descend into subfolders)
+firmauy sign-any-batch --input-dir ~/docs --output-dir ~/signed
+
+# Restrict to a glob (e.g. only .zip files)
+firmauy sign-any-batch --input-dir ~/docs --glob '*.zip' --output-dir ~/signed
+```
+
+Each output is named `<original-name>.p7s` inside `--output-dir` (the directory is created
+automatically). The PIN can be supplied non-interactively (entered once for the whole batch) with
+`--pin-source`, exactly as with the other commands. All the `sign-any` options (token,
+certificate and PIN selection, `--tsa-url`, `--overwrite`) also apply.
+
+Make sure you have reviewed all files before signing them in batch.
+
 ### Verify a signed XML
 
 Verify a signed XAdES XML locally: signature integrity plus, when trust anchors are available,
@@ -328,30 +390,44 @@ cannot be obtained.
 are evaluated at verification time, not at signing time. The national CA certificates rotate and
 expire; re-run `firmauy fetch-cas` to refresh the cache, or use `--ca-file`.
 
-#### Trust anchors: sources and pinned fingerprint
+#### Trust anchors: sources and pinned fingerprints
 
-`fetch-cas` downloads from these official sources and verifies the national root against a
-pinned SHA-256 fingerprint (the certificate bytes are not redistributed by this project):
+`fetch-cas` downloads the certificates and verifies **each** against a pinned SHA-256
+fingerprint before caching (the certificate bytes are not redistributed by this project —
+only the hashes are). The intermediate is, in addition, checked to be signed by the root.
 
-| Certificate | Source |
+| Certificate | Source(s), tried in order |
 |---|---|
 | AC Raíz Nacional de Uruguay (AGESIC) | `https://www.uce.gub.uy/acrn/acrn.cer` |
-| AC Ministerio del Interior (intermediate) | `https://ca.minterior.gub.uy/certificados/MICA.cer` |
+| AC Ministerio del Interior (intermediate) | `https://ca.minterior.gub.uy/certificados/MICA.cer` (official), then `https://crt.sh/?d=29172099` (fallback) |
 
-Pinned national root fingerprint (SHA-256 of the certificate):
+> **Note on the intermediate source.** The Ministerio del Interior CA repository
+> (`ca.minterior.gub.uy`) has been decommissioned and now returns `HTTP 501` for every
+> request, and AGESIC's trust-list page still points at that dead URL. `fetch-cas`
+> therefore falls back to the **byte-identical** copy in the public Certificate
+> Transparency log (crt.sh), retrying transient errors. This is safe regardless of the
+> source: the bytes are accepted only if they match the pinned fingerprint below *and*
+> are signed by the pinned root. If the official server is restored, it is used first.
+
+Pinned fingerprints (SHA-256 of each certificate, DER):
 
 ```text
-5533a0401f612c688ebce5bf53f2ec14a734eb178bfae00e50e85dae6723078a
+root (ACRN):        5533a0401f612c688ebce5bf53f2ec14a734eb178bfae00e50e85dae6723078a
+intermediate (MICA): a29cad5c89aa49cff81f17f45c42fd44685510246d9ab5d031448e2fda2517be
 ```
 
-You can audit it yourself against the official download:
+You can audit them yourself:
 
 ```bash
+# Root, from the official source:
 curl -s https://www.uce.gub.uy/acrn/acrn.cer | openssl x509 -noout -fingerprint -sha256
 # SHA256 Fingerprint=55:33:A0:40:...:8A  (same bytes, openssl prints them upper-case with colons)
-```
 
-The intermediate is accepted only if it is signed by that pinned root.
+# Intermediate, from the Certificate Transparency log:
+curl -s -A "firmauy (+https://pypi.org/project/cedula-uy-pdf-sign)" "https://crt.sh/?d=29172099" \
+  | openssl x509 -noout -fingerprint -sha256
+# SHA256 Fingerprint=A2:9C:AD:5C:...:BE
+```
 
 ### Verify a signed PDF
 
@@ -372,11 +448,38 @@ certificate chain to the national root. Trust anchors work exactly like `verify-
 Same indication model (VALID / INDETERMINATE / INVALID) and exit codes as `verify-xml`. When a
 PDF has multiple signatures, the overall indication is the worst one.
 
+### Verify a detached signature (.p7s)
+
+Verify a detached CAdES/`.p7s` signature over a file, mirroring `verify-xml` / `verify-pdf`.
+Because the signature is detached, **both** the original file and its `.p7s` are required:
+
+```bash
+# Defaults to <input>.p7s next to the file (integrity + chain to the national root)
+firmauy verify-any contract.zip
+
+# Pass the signature path explicitly
+firmauy verify-any contract.zip contract.zip.p7s
+
+# Only check signature integrity, skip the certificate chain
+firmauy verify-any contract.zip --no-trust
+
+# Use your own trust anchors / also check revocation (needs network)
+firmauy verify-any contract.zip --ca-file my-cas.pem
+firmauy verify-any contract.zip --check-revocation
+```
+
+It checks integrity (the signed bytes hash to the embedded digest and the signature is
+cryptographically valid) and the certificate chain to the national root. Trust anchors work
+exactly like `verify-xml` (run `firmauy fetch-cas` once, or pass `--ca-file`). A detached CMS
+signature has no PDF-style coverage notion: it signs exactly the bytes it is verified against.
+
+Same indication model (VALID / INDETERMINATE / INVALID) and exit codes as `verify-xml`.
+
 ### About verification (scope and limitations)
 
-`verify-xml` and `verify-pdf` perform a **local, technical** verification based on open standards
-(XMLDSig / XAdES, PAdES, X.509 path validation per RFC 5280, and CRL/OCSP), anchored to the
-Uruguayan national root.
+`verify-xml`, `verify-pdf` and `verify-any` perform a **local, technical** verification based
+on open standards (XMLDSig / XAdES, PAdES, CMS / CAdES, X.509 path validation per RFC 5280, and
+CRL/OCSP), anchored to the Uruguayan national root.
 
 - This is **not** the official validator and does **not** provide an official or legally binding
   validation. For legal validity, use the official channels.

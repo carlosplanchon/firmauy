@@ -32,12 +32,14 @@ from cedula_uy_pdf_sign.cert_utils import get_common_name, normalize_issuer_name
 from cedula_uy_pdf_sign.constants import (
     APPEARANCE_HEIGHT,
     APPEARANCE_WIDTH,
+    DEFAULT_IMAGE_OPACITY,
     DEFAULT_PKCS11_LIB,
     DEFAULT_TIMEZONE,
     DEFAULT_X1,
     DEFAULT_X2,
     DEFAULT_Y1,
     DEFAULT_Y2,
+    ImageMode,
 )
 from cedula_uy_pdf_sign.pin import PinSource, get_pin
 from cedula_uy_pdf_sign.pkcs11_utils import (
@@ -148,6 +150,9 @@ OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriti
 ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
 QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Do not print the signer identity block (name, issuer, certificate serial, PKCS#11 ID). Use in batch/automation to keep identifying data out of logs.")]
 VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-verify the produced signature (integrity and coverage, no trust); the command fails if it is not intact.")]
+ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
+ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
+ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +251,9 @@ def _sign_one_pdf(
     field_name: str,
     force: bool,
     overwrite: bool,
+    image_path: Optional[Path] = None,
+    image_mode: ImageMode = ImageMode.background,
+    image_opacity: float = DEFAULT_IMAGE_OPACITY,
 ) -> None:
     """Sign a single PDF. Raises on any error."""
     if output_pdf.exists() and not overwrite:
@@ -305,6 +313,9 @@ def _sign_one_pdf(
                 cert_serial=cert_serial,
                 ts=ts,
                 issuer=issuer_name,
+                image_path=str(image_path) if image_path else None,
+                image_mode=image_mode,
+                image_opacity=image_opacity,
             )
 
             pdf_signer = signers.PdfSigner(
@@ -479,6 +490,9 @@ def sign_pdf(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    image: ImageOpt = None,
+    image_mode: ImageModeOpt = ImageMode.background,
+    image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
     if output_pdf is None:
@@ -578,6 +592,9 @@ def sign_pdf(
                 field_name=field_name,
                 force=force,
                 overwrite=overwrite,
+                image_path=image,
+                image_mode=image_mode,
+                image_opacity=image_opacity,
             )
 
         if verify:
@@ -632,6 +649,9 @@ def sign_pdf_batch(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    image: ImageOpt = None,
+    image_mode: ImageModeOpt = ImageMode.background,
+    image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
@@ -750,6 +770,9 @@ def sign_pdf_batch(
                         field_name=field_name,
                         force=force,
                         overwrite=overwrite,
+                        image_path=image,
+                        image_mode=image_mode,
+                        image_opacity=image_opacity,
                     )
                     if verify:
                         _verify_after_pdf(output_pdf)

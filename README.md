@@ -154,6 +154,29 @@ firmauy sign-pdf input.pdf --verify
 firmauy sign-pdf input.pdf output_signed.pdf --x1 20 --y1 20 --x2 225 --y2 90
 ```
 
+### Image in the signature appearance
+
+You can add an image (PNG/JPEG) to the visible signature, e.g. a handwritten signature or an
+institutional seal/logo. This is **cosmetic only**: it does not change the cryptographic
+signature or its validity.
+
+```bash
+firmauy sign-pdf input.pdf --image firma.png                       # default: behind the text
+firmauy sign-pdf input.pdf --image firma.png --image-mode side     # left of the text
+firmauy sign-pdf input.pdf --image firma.png --image-mode only     # image, no text
+```
+
+`--image-mode` controls the layout inside the signature box:
+
+- `background` (default): the image sits behind the text as a subtle watermark. The signature
+  text (signer, document, date, issuer) stays fully readable. Tune with `--image-opacity 0..1`
+  (default `0.2`).
+- `side`: the image goes to the left, the text reflows into the narrower right column.
+- `only`: just the image, no text (e.g. a scanned handwritten signature).
+
+PNG transparency is supported. The image is scaled to fit the signature box, preserving its
+aspect ratio. `--image` is also available on `sign-pdf-batch`.
+
 ### Specify page
 
 Pages are 0-indexed. Use `-1` to sign the last page.

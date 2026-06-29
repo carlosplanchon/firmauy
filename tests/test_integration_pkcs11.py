@@ -23,6 +23,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
+from PIL import Image
 
 PIN = "1234"
 SO_PIN = "0000"
@@ -242,6 +243,41 @@ def test_sign_via_softhsm_produces_valid_signature(softhsm, sample_pdf, tmp_path
         status = validate_pdf_signature(embedded[0], ValidationContext(allow_fetching=False))
         assert status.intact, "signed bytes were altered"
         assert status.valid, "signature cryptography did not verify"
+        assert status.coverage.name == "ENTIRE_FILE"
+
+
+def test_sign_with_image_appearance_stays_valid(softhsm, sample_pdf, tmp_path):
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+
+    png = tmp_path / "sig.png"
+    Image.new("RGBA", (120, 48), (10, 30, 200, 160)).save(png)
+
+    output_pdf = tmp_path / "signed.pdf"
+    proc = softhsm.firmauy(
+        "sign-pdf", str(sample_pdf), str(output_pdf),
+        "--pkcs11-lib", softhsm.module, "--token-label", "test-cedula",
+        "--pin-source", "stdin", "--image", str(png), "--image-mode", "side",
+        input_text=PIN + "\n",
+    )
+    assert proc.returncode == 0, _output(proc)
+    assert output_pdf.exists()
+
+    # An image appearance is cosmetic: the signature must still be intact, valid and full-file.
+    from pyhanko.pdf_utils.reader import PdfFileReader
+    from pyhanko.sign.validation import validate_pdf_signature
+    from pyhanko_certvalidator import ValidationContext
+
+    with output_pdf.open("rb") as f:
+        reader = PdfFileReader(f)
+        embedded = reader.embedded_signatures
+        assert len(embedded) == 1
+        status = validate_pdf_signature(embedded[0], ValidationContext(allow_fetching=False))
+        assert status.intact and status.valid
         assert status.coverage.name == "ENTIRE_FILE"
 
 

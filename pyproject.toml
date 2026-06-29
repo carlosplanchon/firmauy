@@ -31,6 +31,7 @@ dependencies = [
     "asn1crypto>=1.5.1",
     "cryptography>=49.0.0",
     "lxml>=6.1.1",
+    "pillow>=10.0.0",
     "pyhanko[pkcs11]>=0.35.1",
     "pyhanko-certvalidator>=0.31.1",
     "python-pkcs11>=0.9.4",

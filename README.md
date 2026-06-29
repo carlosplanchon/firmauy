@@ -43,13 +43,17 @@ The CLI tool is invoked as `firmauy` and supports:
 
 | Format | Command | Output | Verification | Timestamping |
 |---|---|---|---|---|
-| PDF / PAdES | `sign-pdf` | signed `.pdf` | `verify-pdf` / `verify` | optional (TSA) |
-| XML / XAdES | `sign-xml` | signed `.xml` | `verify-xml` / `verify` | optional (TSA) |
-| Any file / CAdES | `sign-any` | detached `.p7s` | `verify-any` / `verify` | optional (TSA) |
+| PDF / PAdES | `sign-pdf` | signed `.pdf` | `verify-pdf` / `verify` | optional (external TSA) |
+| XML / XAdES | `sign-xml` | signed `.xml` | `verify-xml` / `verify` | optional (external TSA) |
+| Any file / CAdES | `sign-any` | detached `.p7s` | `verify-any` / `verify` | optional (external TSA) |
 
 The full AdES triad (PAdES / XAdES / CAdES), signed locally with the cédula and verifiable with
 standard validators; local verification anchors the chain to the Uruguayan national root. Each
 command has a batch variant (`sign-pdf-batch`, `sign-xml-batch`, `sign-any-batch`).
+
+Timestamping is **optional and bring-your-own**: it works with any external RFC 3161 TSA via
+`--tsa-url`, but it is **not** part of the standard cédula flow, and Uruguay has no free public TSA
+(the accredited qualified ones are gated). See [Timestamping](#timestamping-tsa-optional).
 
 ## Requirements
 
@@ -249,7 +253,7 @@ firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint \
   --tsa-header "Authorization: Bearer $TOKEN"
 ```
 
-TSA timestamping is **optional** and is **not required** for the standard Uruguayan cédula signing flow. It adds independent, trusted-time evidence to the signature and involves an external network request to the TSA.
+TSA timestamping is **optional** and **not required** for the standard Uruguayan cédula flow (the official tools sign at the BES level, without a timestamp). It is **bring-your-own**: any external RFC 3161 TSA works. Uruguay has no free public TSA, and the accredited *qualified* timestamping services (e.g. Antel/TuID, regulated by the UCE) are gated behind subscriber credentials. So a *qualified* Uruguayan timestamp requires access you arrange separately, while any public RFC 3161 TSA still gives a technical timestamp. A timestamp adds trusted-time evidence and involves an external network request to the TSA.
 
 > Any public RFC 3161 TSA works here for a **technical** timestamp; a *qualified* timestamp requires credentials from an accredited provider (which is what `--tsa-user` / `--tsa-header` are for). Client-certificate (mTLS) TSAs are **not** supported.
 
@@ -545,75 +549,15 @@ Revocation (CRL/OCSP) is **off by default** (offline). Enable it with `--check-r
 which fetches revocation data and fails the chain if the certificate is revoked or that data
 cannot be obtained.
 
-> ⚠️ For **cédula** signatures, `--check-revocation` currently **cannot succeed**: the leaf
-> certificate's CRL distribution point is on the Ministerio del Interior server
-> (`ca.minterior.gub.uy`), which has been decommissioned and returns `HTTP 501`. Since
-> revocation is `hard-fail`, unreachable revocation data fails the chain. Use the default
-> (no `--check-revocation`) until the CRL endpoint is restored.
+> ⚠️ For **cédula** signatures, `--check-revocation` currently cannot succeed: the issuer's CRL
+> endpoint is offline. Use the default (no `--check-revocation`). Details in
+> [docs/trust-anchors.md](docs/trust-anchors.md).
 
-⚠️ Limitations: since XAdES-BES carries no trusted timestamp, certificate validity and revocation
-are evaluated at verification time, not at signing time. The bundled national CA certificates
-expire (2031) and can be rotated by the issuer; re-run `firmauy fetch-cas` to refresh from the
-network, or use `--ca-file`.
-
-#### Trust anchors: bundled, with pinned fingerprints
-
-The package **bundles** these certificates as built-in trust anchors (public certificates, see
-[`data/PROVENANCE.md`](https://github.com/carlosplanchon/cedula-uy-pdf-sign/blob/main/src/cedula_uy_pdf_sign/data/PROVENANCE.md)); `fetch-cas` can refresh them
-from the sources below. Every certificate (bundled, cached, downloaded, or supplied via
-`--ca-file` / `--from-file`) is verified against a pinned SHA-256 fingerprint, and the
-intermediate is additionally checked to be signed by the root, so the origin of the bytes never
-matters.
-
-| Certificate | Source(s), tried in order |
-|---|---|
-| AC Raíz Nacional de Uruguay (AGESIC) | `https://www.uce.gub.uy/acrn/acrn.cer` |
-| AC Ministerio del Interior (intermediate) | `https://ca.minterior.gub.uy/certificados/MICA.cer` (official), then `https://crt.sh/?d=29172099` (fallback) |
-
-> **Note on the intermediate source.** The Ministerio del Interior CA repository
-> (`ca.minterior.gub.uy`) has been decommissioned and now returns `HTTP 501` for every
-> request, and AGESIC's trust-list page still points at that dead URL. `fetch-cas`
-> therefore falls back to the **byte-identical** copy in the public Certificate
-> Transparency log (crt.sh), retrying transient errors. This is safe regardless of the
-> source: the bytes are accepted only if they match the pinned fingerprint below *and*
-> are signed by the pinned root. If the official server is restored, it is used first.
-
-`fetch-cas` is **optional**: verification already uses the bundled certificates; it only
-refreshes a per-user cache. If you do run it and crt.sh is flaky, you can seed the intermediate
-from a local copy with `--from-file` instead of downloading. The fingerprint pin makes the
-file's origin irrelevant; a copy that doesn't match a pin is ignored and downloaded instead:
-
-```bash
-# Seed the intermediate from a local file; the root still downloads (it is reliable)
-firmauy fetch-cas --from-file mica.pem
-
-# Fully offline: supply both (a bundle, or repeat --from-file)
-firmauy fetch-cas --from-file acrn.pem --from-file mica.pem
-```
-
-Any certificate matching a pinned fingerprint is taken from the supplied file(s) instead of
-being downloaded. (The cédula middleware does **not** install these certificates, and the
-package already bundles them, so you rarely need this.)
-
-Pinned fingerprints (SHA-256 of each certificate, DER):
-
-```text
-root (ACRN):        5533a0401f612c688ebce5bf53f2ec14a734eb178bfae00e50e85dae6723078a
-intermediate (MICA): a29cad5c89aa49cff81f17f45c42fd44685510246d9ab5d031448e2fda2517be
-```
-
-You can audit them yourself:
-
-```bash
-# Root, from the official source:
-curl -s https://www.uce.gub.uy/acrn/acrn.cer | openssl x509 -noout -fingerprint -sha256
-# SHA256 Fingerprint=55:33:A0:40:...:8A  (same bytes, openssl prints them upper-case with colons)
-
-# Intermediate, from the Certificate Transparency log:
-curl -s -A "firmauy (+https://pypi.org/project/cedula-uy-pdf-sign)" "https://crt.sh/?d=29172099" \
-  | openssl x509 -noout -fingerprint -sha256
-# SHA256 Fingerprint=A2:9C:AD:5C:...:BE
-```
+**Trust anchors.** The national root and intermediate CA certificates are **bundled** with the
+package and verified against pinned SHA-256 fingerprints before use, so chain validation works
+**offline, out of the box**. The certificate sources, the Certificate Transparency fallback, the
+pinned fingerprints, `fetch-cas` (`--from-file`) and the decommissioned CRL are documented in
+**[docs/trust-anchors.md](docs/trust-anchors.md)**.
 
 ### Verify a signed PDF
 
@@ -837,21 +781,10 @@ The package source lives under `src/cedula_uy_pdf_sign/`; tests under `tests/`.
 
 ### Developing without the real card (SoftHSM2)
 
-Entering the wrong PIN too many times **blocks the cédula**, so you should not develop against the real card. Instead, you can run the full signing pipeline against a software PKCS#11 token (SoftHSM2) that mimics a cédula closely enough to exercise token discovery, certificate selection, PIN handling and signing.
-
-```bash
-# Arch Linux: install the software token + tooling
-sudo pacman -S softhsm opensc openssl
-
-# Provision a throwaway "fake cédula" token under ./.softhsm
-bash scripts/dev-softhsm-setup.sh
-```
-
-The script prints ready-to-run `firmauy list-certs` / `firmauy sign-pdf` commands pointing at the SoftHSM module. The resulting PDF is a cryptographically valid signature, but it will **not** validate as a *cédula* signature on [firma.gub.uy](https://firma.gub.uy/) (the issuing CA is a local fake, by design). Reset everything with `rm -rf .softhsm`.
-
-The token persists under `.softhsm`, so this doubles as a normal development loop: run `firmauy` by hand as often as you like (signing test PDFs, trying signature positions with `--x1/--y1/...`, exercising `sign-pdf-batch`, reproducing a reported bug) while iterating on the code, without the card and without risking PIN lockout. The real card is then only needed for a final validation run and for middleware-specific behaviour.
-
-The same setup powers the end-to-end integration tests (`tests/test_integration_pkcs11.py`, `test_integration_xades.py`, `test_integration_cms.py`) that exercise the real PKCS#11 path: signing PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) plus cryptographic verification of the result, and the selection/error branches that are unsafe to reproduce on the real card (expired certificate, certificate without a private key, multiple tokens, certificate scoring and `--cert-id` override). They are **skipped automatically** when SoftHSM2 / OpenSC / OpenSSL (or signxml) are not installed, so `uv run pytest` works either way.
+Entering the wrong PIN too many times **blocks the cédula**, so develop against a software PKCS#11
+token (SoftHSM2) instead of the card. The setup, the throwaway "fake cédula" provisioning script
+(`scripts/dev-softhsm-setup.sh`), the iterate-without-the-card loop and how the integration tests
+use it are documented in **[docs/development.md](docs/development.md)**.
 
 ## Contributing & reporting issues
 

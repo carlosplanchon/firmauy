@@ -24,7 +24,7 @@ firmauy verify-pdf input_firmado.pdf       # verify (offline, chain to the natio
 
 ## Overview
 
-`cedula-uy-pdf-sign` provides a local, developer-oriented workflow for **signing and verifying** documents and files with a Uruguayan national ID card (cédula) using PKCS#11 middleware: PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s).
+`cedula-uy-pdf-sign` provides a local, developer-oriented workflow for **signing and verifying** documents and files with a Uruguayan national ID card (cédula) using PKCS#11 middleware: PDF (PAdES), XML (XAdES) and detached CAdES/.p7s signatures for arbitrary files.
 
 The CLI tool is invoked as `firmauy` and supports:
 
@@ -133,14 +133,17 @@ If the output path is omitted, the signed file is saved as:
 <input>_firmado.pdf
 ```
 
-### Self-check after signing (`--verify`)
+### Signing sanity check (`--verify`) vs full verification
 
-Any signing command (`sign-pdf` / `sign-xml` / `sign-any` and their `*-batch` variants) accepts
-`--verify`: right after writing the output it re-verifies the signature it just produced
-(integrity and, for PDFs, coverage of the whole file). It does **not** validate the trust chain;
-this is a sanity check that catches a corrupt or malformed output immediately, not a trust
-decision. If the produced signature is not intact the command fails (non-zero exit); in batch it
-counts as an error for that file.
+These are two different things, and the distinction matters:
+
+- **`sign-pdf --verify`** (also `sign-xml` / `sign-any` and their `*-batch` variants): an immediate
+  **sanity check** of the signature just produced, right after writing it (integrity, and for PDFs
+  full-file coverage). It does **not** validate the trust chain; it catches a corrupt or malformed
+  output on the spot. If the signature is not intact the command fails (non-zero exit); in batch it
+  counts as an error for that file.
+- **`verify-pdf` / `verify-xml` / `verify-any` / `verify`**: a full **technical verification**,
+  including the certificate chain to the Uruguayan national root (see below).
 
 ```bash
 firmauy sign-pdf input.pdf --verify
@@ -335,7 +338,7 @@ PIN selection, `--timezone`, `--overwrite`) also apply.
 
 Make sure you have reviewed all documents before signing them in batch.
 
-### Sign any file (CAdES / .p7s)
+### Sign any file (detached CAdES / .p7s)
 
 Sign **any file** (not just PDF or XML) with the cédula, producing a standards-based
 **CAdES-BES detached** signature (RFC 5652 CMS / PKCS#7), following ETSI EN 319 122. This

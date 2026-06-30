@@ -246,6 +246,30 @@ def _warn_image_opacity_unused(image, image_mode, image_opacity) -> None:
         )
 
 
+def _validate_image(image) -> None:
+    """Fail early (in pre-flight, before the PIN/card session) if --image is not a usable image.
+    typer only checks the file exists; this catches a corrupt file or a non-image."""
+    if image is None:
+        return
+    from PIL import Image, UnidentifiedImageError
+    try:
+        with Image.open(image) as im:
+            im.verify()
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise RuntimeError(f"--image '{image}' is not a valid image: {exc}")
+
+
+def _batch_output(p: Path, input_dir: Optional[Path], output_dir: Path, ext: str, suffix: str) -> Path:
+    """Output path for a batch input file. A file from ``--input-dir`` keeps its sub-directory
+    structure under ``output_dir`` (so equally-named files in different sub-folders never collide
+    under ``--recursive``); a positional file (``input_dir is None``) is placed flat by name.
+    ``ext`` is like ``.pdf``; ``suffix`` is appended to the stem (e.g. ``_firmado``)."""
+    name = f"{p.stem}{suffix}{ext}"
+    if input_dir is None:
+        return output_dir / name
+    return output_dir / p.relative_to(input_dir).parent / name
+
+
 def _sign_one_pdf(
     *,
     input_pdf: Path,
@@ -574,6 +598,7 @@ def sign_pdf(
     try:
         # --- Pre-flight checks ---
         _warn_image_opacity_unused(image, image_mode, image_opacity)
+        _validate_image(image)
         timestamper = _build_timestamper(
             tsa_url=tsa_url,
             tsa_user=tsa_user,
@@ -731,6 +756,7 @@ def sign_pdf_batch(
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
         _warn_image_opacity_unused(image, image_mode, image_opacity)
+        _validate_image(image)
         timestamper = _build_timestamper(
             tsa_url=tsa_url,
             tsa_user=tsa_user,
@@ -738,7 +764,12 @@ def sign_pdf_batch(
             tsa_header=tsa_header,
         )
 
-        all_pdfs: List[Path] = list(input_pdfs) if input_pdfs else []
+        # Build (input, output) jobs. Files from --input-dir keep their sub-directory structure
+        # under --output-dir (so equally-named files in different sub-folders do not collide when
+        # --recursive); positional files are placed flat by name.
+        jobs: list[tuple[Path, Path]] = [
+            (p, _batch_output(p, None, output_dir, ".pdf", suffix)) for p in (input_pdfs or [])
+        ]
 
         if input_dir is not None:
             if not input_dir.is_dir():
@@ -749,9 +780,11 @@ def sign_pdf_batch(
                 )
                 raise typer.Exit(code=1)
             pattern = "**/*.pdf" if recursive else "*.pdf"
-            all_pdfs += sorted(input_dir.glob(pattern))
+            for p in sorted(input_dir.glob(pattern)):
+                if p.is_file():
+                    jobs.append((p, _batch_output(p, input_dir, output_dir, ".pdf", suffix)))
 
-        if not all_pdfs:
+        if not jobs:
             typer.secho(
                 "No input files specified. "
                 "Use positional arguments or --input-dir.",
@@ -759,8 +792,6 @@ def sign_pdf_batch(
                 err=True,
             )
             raise typer.Exit(code=1)
-
-        input_pdfs = all_pdfs
 
         if x2 <= x1 or y2 <= y1:
             typer.secho(
@@ -805,7 +836,7 @@ def sign_pdf_batch(
                 tsa_url=tsa_url,
                 quiet=quiet,
             )
-            typer.echo(f"Files to sign:       {len(input_pdfs)}")
+            typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
             pkcs11_signer = PKCS11Signer(
@@ -825,8 +856,7 @@ def sign_pdf_batch(
             ok_count = 0
             err_count = 0
 
-            for input_pdf in input_pdfs:
-                output_pdf = output_dir / f"{input_pdf.stem}{suffix}.pdf"
+            for input_pdf, output_pdf in jobs:
                 try:
                     _sign_one_pdf(
                         input_pdf=input_pdf,
@@ -859,7 +889,7 @@ def sign_pdf_batch(
                     err_count += 1
 
         typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(input_pdfs)}. Errors: {err_count}.")
+        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}.")
 
         if err_count:
             raise typer.Exit(code=1)
@@ -1087,7 +1117,12 @@ def sign_xml_batch(
         timestamper = _build_timestamper(
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
         )
-        all_xmls: List[Path] = list(input_xmls) if input_xmls else []
+        # (input, output) jobs: --input-dir files keep their sub-directory structure under
+        # --output-dir (so equally-named files in different sub-folders do not collide when
+        # --recursive); positional files are placed flat by name.
+        jobs: list[tuple[Path, Path]] = [
+            (p, _batch_output(p, None, output_dir, ".xml", suffix)) for p in (input_xmls or [])
+        ]
 
         if input_dir is not None:
             if not input_dir.is_dir():
@@ -1098,9 +1133,11 @@ def sign_xml_batch(
                 )
                 raise typer.Exit(code=1)
             pattern = "**/*.xml" if recursive else "*.xml"
-            all_xmls += sorted(input_dir.glob(pattern))
+            for p in sorted(input_dir.glob(pattern)):
+                if p.is_file():
+                    jobs.append((p, _batch_output(p, input_dir, output_dir, ".xml", suffix)))
 
-        if not all_xmls:
+        if not jobs:
             typer.secho(
                 "No input files specified. "
                 "Use positional arguments or --input-dir.",
@@ -1131,7 +1168,7 @@ def sign_xml_batch(
                 tsa_url=tsa_url,
                 quiet=quiet,
             )
-            typer.echo(f"Files to sign:       {len(all_xmls)}")
+            typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
             raw_signer = _make_raw_signer(session, key_id)
@@ -1139,8 +1176,7 @@ def sign_xml_batch(
             ok_count = 0
             err_count = 0
 
-            for input_xml in all_xmls:
-                output_xml = output_dir / f"{input_xml.stem}{suffix}.xml"
+            for input_xml, output_xml in jobs:
                 try:
                     _sign_one_xml(
                         input_xml=input_xml,
@@ -1160,7 +1196,7 @@ def sign_xml_batch(
                     err_count += 1
 
         typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(all_xmls)}. Errors: {err_count}.")
+        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}.")
 
         if err_count:
             raise typer.Exit(code=1)
@@ -1806,6 +1842,24 @@ def verify_cmd(
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
 
         kind = _detect_signature_kind(input_file)
+
+        # For a detached .p7s, locate the original up front (before resolving trust anchors, so a
+        # missing original fails fast). --original is meaningful only here.
+        orig = None
+        if kind == "cms":
+            orig = original or _detached_original(input_file)
+            if orig is None or not orig.exists():
+                raise RuntimeError(
+                    "detached .p7s signature needs its original file; pass it with --original"
+                    + (f" (looked for '{orig}')" if orig is not None else "")
+                )
+        elif original is not None:
+            typer.secho(
+                f"Note: --original is ignored for a {kind.upper()} file "
+                "(it only applies to a detached .p7s).",
+                fg=typer.colors.YELLOW, err=True,
+            )
+
         roots, intermediates = _resolve_trust_anchors(ca_file, no_trust)
 
         if kind == "pdf":
@@ -1815,12 +1869,6 @@ def verify_cmd(
             results = [verify_xml(input_file.read_bytes(), trust_roots=roots,
                                   intermediates=intermediates, check_revocation=check_revocation)]
         else:  # cms / detached .p7s
-            orig = original or _detached_original(input_file)
-            if orig is None or not orig.exists():
-                raise RuntimeError(
-                    "detached .p7s signature needs its original file; pass it with --original"
-                    + (f" (looked for '{orig}')" if orig is not None else "")
-                )
             with orig.open("rb") as data:
                 results = [verify_cms(data, input_file.read_bytes(), trust_roots=roots,
                                       intermediates=intermediates, check_revocation=check_revocation)]

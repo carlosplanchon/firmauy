@@ -313,6 +313,53 @@ def test_list_certs_redact_with_raw_pem_errors_before_card():
     assert "redact has no effect on raw --pem" in result.output
 
 
+def test_validate_image_accepts_valid_rejects_invalid(tmp_path):
+    from PIL import Image
+
+    from cedula_uy_pdf_sign.cli import _validate_image
+
+    good = tmp_path / "ok.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(good)
+    _validate_image(str(good))   # valid -> no raise
+    _validate_image(None)        # no image -> no raise
+
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"not an image")
+    with pytest.raises(RuntimeError, match="not a valid image"):
+        _validate_image(str(bad))
+
+
+def test_sign_pdf_invalid_image_fails_before_the_card(tmp_path):
+    # The --image check runs in pre-flight, so a bad image fails without touching the card / PIN.
+    pdf = tmp_path / "in.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"not an image")
+    result = runner.invoke(app, ["sign-pdf", str(pdf), "--image", str(bad)])
+    assert result.exit_code == 1
+    assert "not a valid image" in result.output
+
+
+def test_batch_output_preserves_subdirs_and_avoids_collisions(tmp_path):
+    from pathlib import Path
+
+    from cedula_uy_pdf_sign.cli import _batch_output
+
+    out = tmp_path / "out"
+    indir = tmp_path / "in"
+
+    # Positional file (input_dir=None) -> flat by stem + suffix + ext.
+    assert _batch_output(Path("/x/y/a.pdf"), None, out, ".pdf", "_firmado") == out / "a_firmado.pdf"
+    # Top-level file inside --input-dir -> flat (no spurious '.' segment).
+    assert _batch_output(indir / "a.pdf", indir, out, ".pdf", "_firmado") == out / "a_firmado.pdf"
+    # A sub-folder file keeps its structure under output_dir.
+    assert _batch_output(indir / "sub" / "a.pdf", indir, out, ".pdf", "_firmado") == out / "sub" / "a_firmado.pdf"
+    # Equally-named files in different sub-folders do NOT collide (the bug this fixes).
+    o1 = _batch_output(indir / "d1" / "a.pdf", indir, out, ".pdf", "_firmado")
+    o2 = _batch_output(indir / "d2" / "a.pdf", indir, out, ".pdf", "_firmado")
+    assert o1 != o2
+
+
 def test_image_opacity_warning_only_outside_background(capsys):
     from cedula_uy_pdf_sign.cli import _warn_image_opacity_unused
     from cedula_uy_pdf_sign.constants import DEFAULT_IMAGE_OPACITY, ImageMode
@@ -335,3 +382,11 @@ def test_verify_autodetect_xml_dispatch(tmp_path):
     result = runner.invoke(app, ["verify", str(xml), "--no-trust", "--json"])
     assert result.exit_code == 1
     assert json.loads(result.output)["indication"] == "INVALID"
+
+
+def test_verify_original_ignored_for_non_cms_warns(tmp_path):
+    xml = tmp_path / "u.xml"
+    xml.write_bytes(b"<?xml version='1.0'?><root/>")
+    result = runner.invoke(app, ["verify", str(xml), "--original", "whatever.txt", "--no-trust"])
+    assert "--original is ignored" in result.output   # warned, not silently dropped
+    assert result.exit_code == 1                       # still verified the XML (no signature)

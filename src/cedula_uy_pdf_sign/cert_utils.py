@@ -53,3 +53,10 @@ def cert_not_after(cert: x509.Certificate) -> str:
         return cert.not_valid_after_utc.strftime("%Y-%m-%d")
     except AttributeError:
         return cert.not_valid_after.strftime("%Y-%m-%d")  # type: ignore[attr-defined]
+
+
+def cert_not_before(cert: x509.Certificate) -> str:
+    try:
+        return cert.not_valid_before_utc.strftime("%Y-%m-%d")
+    except AttributeError:
+        return cert.not_valid_before.strftime("%Y-%m-%d")  # type: ignore[attr-defined]

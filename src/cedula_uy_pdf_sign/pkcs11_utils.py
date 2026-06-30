@@ -11,7 +11,7 @@ import typer
 from cryptography import x509
 from cryptography.x509.oid import ExtendedKeyUsageOID
 
-from cedula_uy_pdf_sign.cert_utils import get_common_name, cert_not_after
+from cedula_uy_pdf_sign.cert_utils import cert_not_after, cert_not_before, get_common_name
 
 
 def load_pkcs11_lib(pkcs11_lib: str) -> pkcs11.lib:
@@ -77,6 +77,14 @@ def cert_is_expired(cert: x509.Certificate) -> bool:
     return datetime.now(timezone.utc) > not_after
 
 
+def cert_not_yet_valid(cert: x509.Certificate) -> bool:
+    try:
+        not_before = cert.not_valid_before_utc
+    except AttributeError:
+        not_before = cert.not_valid_before.replace(tzinfo=timezone.utc)  # type: ignore[attr-defined]
+    return datetime.now(timezone.utc) < not_before
+
+
 def get_private_key(session: pkcs11.Session, key_id: bytes) -> pkcs11.Object:
     """Return the private-key object on the token matching the given ID."""
     keys = list(session.get_objects({
@@ -114,7 +122,7 @@ def select_certificate(
     """
     wanted_id = bytes.fromhex(normalize_cert_id_hex(cert_id_hex)) if cert_id_hex else None
     cert_candidates: list[tuple[bytes, x509.Certificate]] = []
-    expired_candidates: list[tuple[bytes, x509.Certificate]] = []
+    unusable_candidates: list[tuple[bytes, x509.Certificate]] = []   # expired or not yet valid
 
     for cert_obj in iter_cert_objects(session):
         try:
@@ -127,12 +135,12 @@ def select_certificate(
         if wanted_id is not None and obj_id != wanted_id:
             continue
 
-        if cert_is_expired(cert):
-            expired_candidates.append((obj_id, cert))
+        if cert_is_expired(cert) or cert_not_yet_valid(cert):
+            unusable_candidates.append((obj_id, cert))
         else:
             cert_candidates.append((obj_id, cert))
 
-    if not cert_candidates and not expired_candidates:
+    if not cert_candidates and not unusable_candidates:
         if cert_id_hex:
             raise RuntimeError(
                 f"No certificate found with ID {cert_id_hex} in the token."
@@ -140,10 +148,14 @@ def select_certificate(
         raise RuntimeError("No usable certificates found in the token.")
 
     if not cert_candidates:
-        cn = get_common_name(expired_candidates[0][1].subject)
-        not_after = cert_not_after(expired_candidates[0][1])
+        cert = unusable_candidates[0][1]
+        cn = get_common_name(cert.subject)
+        if cert_is_expired(cert):
+            reason = f"expired (valid until {cert_not_after(cert)})"
+        else:
+            reason = f"not yet valid (valid from {cert_not_before(cert)})"
         raise RuntimeError(
-            f"Selected certificate is expired (valid until {not_after}): {cn}\n"
+            f"Selected certificate is {reason}: {cn}\n"
             "No valid certificates found in the token."
         )
 
@@ -171,9 +183,9 @@ def select_certificate(
 
     cert_candidates = valid_candidates
 
-    if expired_candidates:
+    if unusable_candidates:
         typer.secho(
-            f"Warning: {len(expired_candidates)} expired certificate(s) skipped.",
+            f"Warning: {len(unusable_candidates)} certificate(s) skipped (expired or not yet valid).",
             fg=typer.colors.YELLOW,
             err=True,
         )

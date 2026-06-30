@@ -44,6 +44,7 @@ from cedula_uy_pdf_sign.cert_utils import (
     name_fields,
     normalize_issuer_name,
 )
+from cedula_uy_pdf_sign.ci import complete_ci, validate_ci
 from cedula_uy_pdf_sign.constants import (
     APPEARANCE_HEIGHT,
     APPEARANCE_WIDTH,
@@ -2368,4 +2369,103 @@ def fetch_photo_cmd(
             typer.secho(f"Photo saved: {output} ({len(photo)} bytes)", fg=typer.colors.GREEN)
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: validate-ci
+# ---------------------------------------------------------------------------
+
+@app.command("validate-ci")
+def validate_ci_cmd(
+    ci: Annotated[
+        str,
+        typer.Argument(
+            help='Cédula number, with or without separators (e.g. "1.234.567-8" or "12345678").'
+        ),
+    ],
+    complete: bool = typer.Option(
+        False,
+        "--complete",
+        help="Treat the input as a cédula body without its check digit, and print the completed number.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
+    json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
+    redact: bool = typer.Option(
+        False,
+        "--redact",
+        help="In --json validation output, drop the cédula number, keeping only the validity flag.",
+    ),
+) -> None:
+    """Validate (or complete) a Uruguayan cédula's check digit. No card or PIN needed.
+
+    This is a purely arithmetic consistency check of the number (the standard weighted check digit).
+    It does NOT validate identity, the existence or current validity of the person, the validity of
+    the document, or the authenticity of a card; it only catches typos and malformed numbers.
+
+    Exit codes: 0 valid, 1 invalid, 2 malformed input (with --complete: 0 on success, 2 on
+    malformed input).
+    """
+    json_output = json_output or json_pretty
+    if complete and redact:
+        raise typer.BadParameter(
+            "--redact has no effect with --complete (the completed cédula is the output)."
+        )
+
+    try:
+        if complete:
+            full = complete_ci(ci)
+            if json_output:
+                typer.echo(_json_dumps({
+                    "schema_version": _JSON_SCHEMA_VERSION,
+                    "redacted": False,
+                    "input": ci,
+                    "body": full[:-1],
+                    "check_digit": full[-1],
+                    "complete": full,
+                }, json_pretty))
+            else:
+                typer.echo(full)
+            return
+
+        result = validate_ci(ci)
+    except ValueError as exc:
+        if json_output:
+            typer.echo(_json_dumps(
+                {"schema_version": _JSON_SCHEMA_VERSION, "error": _format_error(exc)}, json_pretty))
+        else:
+            typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    if json_output:
+        if redact:
+            payload = {
+                "schema_version": _JSON_SCHEMA_VERSION,
+                "redacted": True,
+                "valid": result["valid"],
+            }
+        else:
+            payload = {
+                "schema_version": _JSON_SCHEMA_VERSION,
+                "redacted": False,
+                "valid": result["valid"],
+                "input": ci,
+                "normalized": result["normalized"],
+                "body": result["body"],
+                "check_digit": result["check_digit"],
+                "expected_check_digit": result["expected_check_digit"],
+            }
+        typer.echo(_json_dumps(payload, json_pretty))
+    elif result["valid"]:
+        typer.secho(
+            f"VALID: {result['normalized']} (check digit {result['check_digit']})",
+            fg=typer.colors.GREEN,
+        )
+    else:
+        typer.secho(
+            f"INVALID: {result['normalized']} "
+            f"(check digit {result['check_digit']}, expected {result['expected_check_digit']})",
+            fg=typer.colors.RED,
+        )
+    if not result["valid"]:
         raise typer.Exit(code=1)

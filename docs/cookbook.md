@@ -34,6 +34,30 @@ Scriptable verification with `jq` (read just the indication):
 firmauy verify contrato_firmado.pdf --json | jq -r .indication   # -> VALID
 ```
 
+## Cédula numbers (check digit, no card)
+
+Validate a cédula's check digit (a purely arithmetic consistency check; not an identity or document
+validity check). It needs no card, PIN or network, so it works anywhere:
+
+```bash
+firmauy validate-ci 1.234.567-2     # -> VALID    (exit 0)
+firmauy validate-ci 12345678        # -> INVALID  (exit 1)
+```
+
+Use it as a guard in a script (exit `0` valid, `1` invalid, `2` malformed input):
+
+```bash
+for ci in "$@"; do
+  firmauy validate-ci "$ci" >/dev/null && echo "$ci ok" || echo "$ci REJECTED"
+done
+```
+
+Complete a body that is missing its check digit (the "calculator" mode):
+
+```bash
+firmauy validate-ci 1234567 --complete    # -> 12345672
+```
+
 ## Privacy and debugging
 
 Share a verification result without any personal data:

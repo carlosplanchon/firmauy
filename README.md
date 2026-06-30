@@ -38,6 +38,7 @@ The CLI tool is invoked as `firmauy` and supports:
 - selecting the signature page
 - discovering PC/SC readers, PKCS#11 tokens and certificates
 - reading the cardholder's biographical data and photo from the card, without a PIN (`fetch-identity` / `fetch-photo`)
+- validating a cédula number's check digit offline, with no card or PIN (`validate-ci`)
 - diagnosing the local setup with `doctor`
 - non-interactive PIN sources for controlled automation workflows
 
@@ -787,6 +788,7 @@ JSON output (`--json-pretty`):
   "birth_date": "01/01/1970",
   "birthplace": "MONTEVIDEO/URY",
   "id_number": "00000000",
+  "id_number_check_digit_valid": true,
   "expiry_date": "01/01/2099",
   "document_number": "00000TXXXX",
   "mrz": [
@@ -829,6 +831,42 @@ With `--json` (or `--json-pretty`) a self-describing record is written to stdout
 ```
 
 The same caveat as `fetch-identity` applies: do not run it while a `sign-*` command is active on the same card. The photo is the most sensitive field on the card, so treat the output file, redirected stream, or receiving application accordingly.
+
+### Validate a cédula number (check digit)
+
+`firmauy validate-ci` checks the check digit of a Uruguayan cédula number. **No card, PIN or network
+is needed**: it is a purely arithmetic consistency check.
+
+> ⚠️ This validates **only the mathematical consistency** of the number (its check digit). It does
+> **not** validate identity, the existence or current validity of a person, the validity of a
+> document, or the authenticity of a card. It catches typos and obviously malformed numbers, nothing
+> more.
+
+```bash
+firmauy validate-ci 1.234.567-2          # accepts dots and dash, or plain digits
+firmauy validate-ci 12345672             # -> VALID    (exit 0)
+firmauy validate-ci 12345678             # -> INVALID  (exit 1; expected check digit 2)
+firmauy validate-ci 1234567 --complete   # a body without its check digit -> 12345672
+firmauy validate-ci 12345672 --json
+firmauy validate-ci 12345672 --json --redact
+```
+
+Exit codes make it scriptable: `0` valid, `1` invalid, `2` malformed input. The JSON record carries
+the usual `schema_version` and the top-level `redacted` flag:
+
+```json
+{ "schema_version": 1, "redacted": false, "valid": true, "input": "1.234.567-2",
+  "normalized": "12345672", "body": "1234567", "check_digit": "2", "expected_check_digit": "2" }
+```
+
+With `--redact` the number (personal data) is dropped, keeping only the verdict:
+
+```json
+{ "schema_version": 1, "redacted": true, "valid": true }
+```
+
+The same check is surfaced in `fetch-identity --json` as `"id_number_check_digit_valid": true`,
+computed from the card's cédula number and present even under `--redact`.
 
 ## Security considerations
 

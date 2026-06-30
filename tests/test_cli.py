@@ -810,3 +810,45 @@ def test_fetch_identity_json_carries_redacted_flag(monkeypatch, capsys):
     cli.fetch_identity_cmd(reader_name=None, json_output=True, json_pretty=False, redact=True)
     red = json.loads(capsys.readouterr().out)
     assert red["redacted"] is True and red["first_lastname"] == "[REDACTED]"
+
+
+# --- validate-ci (card-free check-digit command) --------------------------------------------------
+
+def test_validate_ci_valid_exit_zero():
+    result = runner.invoke(app, ["validate-ci", "12345672"])
+    assert result.exit_code == 0
+    assert "VALID" in result.stdout
+
+
+def test_validate_ci_invalid_exit_one():
+    result = runner.invoke(app, ["validate-ci", "12345678"])   # check digit should be 2, not 8
+    assert result.exit_code == 1
+    assert "INVALID" in result.stdout and "expected 2" in result.stdout
+
+
+def test_validate_ci_malformed_exit_two():
+    assert runner.invoke(app, ["validate-ci", "abc"]).exit_code == 2
+
+
+def test_validate_ci_json_full_record():
+    result = runner.invoke(app, ["validate-ci", "1.234.567-2", "--json"])
+    assert result.exit_code == 0
+    obj = json.loads(result.stdout)
+    assert obj["redacted"] is False and obj["valid"] is True
+    assert obj["normalized"] == "12345672" and obj["expected_check_digit"] == "2"
+
+
+def test_validate_ci_json_redact_drops_number_keeps_validity():
+    result = runner.invoke(app, ["validate-ci", "12345678", "--json", "--redact"])
+    assert result.exit_code == 1                                   # exit code still reflects validity
+    assert json.loads(result.stdout) == {"schema_version": 1, "redacted": True, "valid": False}
+
+
+def test_validate_ci_complete_prints_completed_number():
+    result = runner.invoke(app, ["validate-ci", "1234567", "--complete"])
+    assert result.exit_code == 0
+    assert result.stdout.strip() == "12345672"
+
+
+def test_validate_ci_complete_with_redact_conflicts():
+    assert runner.invoke(app, ["validate-ci", "1234567", "--complete", "--redact"]).exit_code == 2

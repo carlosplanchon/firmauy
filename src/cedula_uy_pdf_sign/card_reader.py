@@ -18,6 +18,8 @@ import base64
 import hashlib
 from typing import Optional
 
+from cedula_uy_pdf_sign.ci import validate_ci
+
 AIS_AID = [0xA0, 0x00, 0x00, 0x00, 0x18, 0x40, 0x00, 0x00, 0x01, 0x63, 0x42, 0x00]
 
 # tag -> (display_label, is_date, json_key)
@@ -325,6 +327,13 @@ def card_to_json_obj(card: dict, redact: bool = False) -> dict:
             out[key] = _fmt_date(val)
         else:
             out[key] = val
+        if tag == 0x07:
+            # Check-digit consistency of the cédula number, computed from the raw value so it stays
+            # meaningful even when the number is redacted. Omitted if the number is unparseable.
+            try:
+                out["id_number_check_digit_valid"] = validate_ci(val)["valid"]
+            except ValueError:
+                pass
     if card["doc_num"] is not None:
         out["document_number"] = "[REDACTED]" if redact else card["doc_num"]
     if card["mrz"] is not None:

@@ -213,3 +213,26 @@ def test_photo_to_json_obj_redacted_drops_image_and_correlators():
     assert obj == {"format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320}
     blob = json.dumps(obj)
     assert base64.b64encode(jpeg).decode() not in blob      # the image never appears, in any form
+
+
+# --- id_number check-digit integration in card_to_json_obj ------------------
+
+def test_card_json_includes_id_number_check_digit_valid():
+    card = {"bio": {0x07: "12345672"}, "doc_num": None, "mrz": None}   # valid check digit
+    full = card_to_json_obj(card, redact=False)
+    assert full["id_number"] == "12345672"
+    assert full["id_number_check_digit_valid"] is True
+    red = card_to_json_obj(card, redact=True)
+    assert red["id_number"] == "[REDACTED]"
+    assert red["id_number_check_digit_valid"] is True      # boolean kept under redact (non-identifying)
+
+
+def test_card_json_id_number_check_digit_invalid():
+    card = {"bio": {0x07: "12345678"}, "doc_num": None, "mrz": None}   # wrong check digit
+    assert card_to_json_obj(card, redact=False)["id_number_check_digit_valid"] is False
+
+
+def test_card_json_omits_check_digit_when_unparseable():
+    card = {"bio": {0x07: "not a number"}, "doc_num": None, "mrz": None}
+    out = card_to_json_obj(card, redact=False)
+    assert "id_number_check_digit_valid" not in out        # unparseable number -> flag omitted

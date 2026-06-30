@@ -11,7 +11,7 @@ on the same card; both paths go through pcscd and may conflict.
 The AID, file identifiers (7001 document number, 7002 biographical data, 700B MRZ), APDUs and TLV
 layout follow AGESIC's public technical documentation for the ID Uruguay card (IAS CLASSIC; ISO/IEC
 7816, ICAO 9303), not any reverse engineering of the middleware:
-https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay
+https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay/documentacion-tecnica-id-uruguay-9
 """
 
 import base64

@@ -1813,6 +1813,46 @@ def sign_batch(
                         fg=typer.colors.RED, err=True)
             raise typer.Exit(code=1)
 
+        # Resolve each input's kind and output path up front (a 1 KB read per file, no card needed),
+        # so output-path collisions are caught before the PIN. A detection failure here becomes a
+        # per-file error below, not an abort.
+        jobs: list[tuple[Path, str, Path]] = []
+        predetect_errors: list[tuple[Path, Exception]] = []
+        for input_path, base in items:
+            try:
+                kind = _resolve_sign_kind(input_path, sign_as)
+                if kind == "pdf":
+                    output = _batch_output(input_path, base, output_dir, ".pdf", suffix)
+                elif kind == "xml":
+                    output = _batch_output(input_path, base, output_dir, ".xml", suffix)
+                else:
+                    rel = (input_path.relative_to(base).as_posix()
+                           if base is not None else input_path.name)
+                    output = output_dir / f"{rel}.p7s"
+                jobs.append((input_path, kind, output))
+            except Exception as exc:
+                predetect_errors.append((input_path, exc))
+
+        # Fail fast (before the PIN) if two inputs would write to the same output. Otherwise that
+        # silently overwrites with --overwrite, or errors mid-batch without it. PDF/XML outputs are
+        # named by stem+suffix+ext, so same-stem inputs of different extensions that resolve to the
+        # same kind collide (the CAdES <name>.p7s naming cannot).
+        seen: dict[Path, Path] = {}
+        collisions: list[tuple[Path, Path, Path]] = []
+        for input_path, _kind, output in jobs:
+            prior = seen.get(output)
+            if prior is None:
+                seen[output] = input_path
+            else:
+                collisions.append((prior, input_path, output))
+        if collisions:
+            detail = "\n".join(f"  '{a}' and '{b}' both map to {out}" for a, b, out in collisions)
+            raise RuntimeError(
+                "Output path collision: these inputs would write to the same file:\n"
+                f"{detail}\n"
+                "Rename an input, change --suffix, or sign the colliding files separately."
+            )
+
         output_dir.mkdir(parents=True, exist_ok=True)
 
         lib = load_pkcs11_lib(pkcs11_lib)
@@ -1844,11 +1884,9 @@ def sign_batch(
 
             ok_count = 0
             err_count = 0
-            for input_path, base in items:
+            for input_path, kind, output in jobs:
                 try:
-                    kind = _resolve_sign_kind(input_path, sign_as)
                     if kind == "pdf":
-                        output = _batch_output(input_path, base, output_dir, ".pdf", suffix)
                         _sign_one_pdf(
                             input_pdf=input_path, output_pdf=output, pkcs11_signer=pkcs11_signer,
                             signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
@@ -1859,7 +1897,6 @@ def sign_batch(
                         if verify:
                             _verify_after_pdf(output)
                     elif kind == "xml":
-                        output = _batch_output(input_path, base, output_dir, ".xml", suffix)
                         _sign_one_xml(
                             input_xml=input_path, output_xml=output, cert=cert, signer=raw_signer,
                             signing_time=datetime.now(ZoneInfo(timezone)),
@@ -1868,9 +1905,6 @@ def sign_batch(
                         if verify:
                             _verify_after_xml(output)
                     else:
-                        rel = (input_path.relative_to(base).as_posix()
-                               if base is not None else input_path.name)
-                        output = output_dir / f"{rel}.p7s"
                         _sign_one_cms(
                             input_file=input_path, output_p7s=output, pkcs11_signer=pkcs11_signer,
                             timestamper=timestamper, overwrite=overwrite,
@@ -1883,6 +1917,12 @@ def sign_batch(
                     typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
                                 fg=typer.colors.RED, err=True)
                     err_count += 1
+
+            # Inputs whose type could not be detected up front are reported here as errors.
+            for input_path, exc in predetect_errors:
+                typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
+                            fg=typer.colors.RED, err=True)
+                err_count += 1
 
         typer.echo("")
         typer.echo(f"Signed: {ok_count}/{len(items)}. Errors: {err_count}.")

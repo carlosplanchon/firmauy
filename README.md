@@ -694,6 +694,82 @@ WARN  cédula token detected: no card found
 PASS  bundled national CA certificates: root + intermediate loaded
 ```
 
+### Read biographical data from the card
+
+`firmauy fetch-identity` reads the biographical data stored in the card's AIS applet — names, birth date, nationality, birthplace, document number and MRZ — directly via PC/SC. **No PIN is required**: this data is publicly accessible without card authentication.
+
+> ⚠️ Do not run `fetch-identity` while a `sign-*` command is active on the same card. Both paths go through `pcscd` and may conflict on the same card connection.
+
+```bash
+# List available PC/SC readers
+firmauy list-readers
+
+# Fetch identity data (auto-detects reader if only one is present)
+firmauy fetch-identity
+
+# Specify a reader by name (as shown by list-readers)
+firmauy fetch-identity --reader "Alcor Link AK9563 00 00"
+
+# Machine-readable JSON output
+firmauy fetch-identity --json
+
+# Indented JSON (implies --json)
+firmauy fetch-identity --json-pretty
+
+# Hide identifying fields (names, ID number, MRZ) but keep nationality, dates, birthplace
+firmauy fetch-identity --redact
+firmauy fetch-identity --json --redact
+```
+
+Human output example:
+
+```text
+╔════════════════════════════════════════════════════════╗
+║             CÉDULA DE IDENTIDAD — URUGUAY              ║
+╠════════════════════════════════════════════════════════╣
+║  Número de documento       00000TXXXX                  ║
+╟────────────────────────────────────────────────────────╢
+║  Primer apellido           EJEMPLO                     ║
+║  Segundo apellido          FICTICIO                    ║
+║  Nombre(s)                 NOMBRE EJEMPLO              ║
+║  Nacionalidad              URY                         ║
+║  Fecha de nacimiento       01/01/1970                  ║
+║  Lugar de nacimiento       MONTEVIDEO/URY              ║
+║  Número de cédula          00000000                    ║
+║  Fecha de vencimiento      01/01/2099                  ║
+╠════════════════════════════════════════════════════════╣
+║                          MRZ                           ║
+╠════════════════════════════════════════════════════════╣
+║  I<URY00000TXXXX1000000000<<<<<<<<                     ║
+║  7001010<9901010URY000000000<<<<<0                     ║
+║  EJEMPLO<FICTICIO<<NOMBRE<EJEMPLO<                     ║
+╚════════════════════════════════════════════════════════╝
+```
+
+JSON output (`--json-pretty`):
+
+```json
+{
+  "schema_version": 1,
+  "first_lastname": "EJEMPLO",
+  "second_lastname": "FICTICIO",
+  "given_names": "NOMBRE EJEMPLO",
+  "nationality": "URY",
+  "birth_date": "01/01/1970",
+  "birthplace": "MONTEVIDEO/URY",
+  "id_number": "00000000",
+  "expiry_date": "01/01/2099",
+  "document_number": "00000TXXXX",
+  "mrz": [
+    "I<URY00000TXXXX1000000000<<<<<<<<",
+    "7001010<9901010URY000000000<<<<<0",
+    "EJEMPLO<FICTICIO<<NOMBRE<EJEMPLO<"
+  ]
+}
+```
+
+Fields absent on a specific card (e.g. no second lastname) are omitted from the output. The `schema_version` field follows the same stable contract as the verify commands. Exit codes: `0` on success, `1` on any error (no reader, no card, APDU failure).
+
 ## Security considerations
 
 - Never pass the PIN directly as a command-line argument.

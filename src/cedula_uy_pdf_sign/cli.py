@@ -28,6 +28,13 @@ from pyhanko.sign.pkcs11 import PKCS11Signer
 from pyhanko.sign.timestamps import HTTPTimeStamper
 
 from cedula_uy_pdf_sign.appearance import ensure_output_parent, make_appearance_pdf
+from cedula_uy_pdf_sign.card_reader import (
+    card_to_json_obj,
+    format_card_human,
+    list_readers,
+    open_reader,
+    read_card,
+)
 from cedula_uy_pdf_sign.cert_utils import (
     cert_not_after,
     get_common_name,
@@ -2142,4 +2149,78 @@ def doctor_cmd(
             fix="The package install looks broken; reinstall firmauy.")
 
     if not _doctor_emit(checks, json_output or json_pretty, pretty=json_pretty):
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: list-readers
+# ---------------------------------------------------------------------------
+
+@app.command("list-readers")
+def list_readers_cmd() -> None:
+    """List all available PC/SC smart card readers."""
+    try:
+        available = list_readers()
+        if not available:
+            typer.secho(
+                "No PC/SC readers found. Is pcscd running and a reader connected?",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        for i, reader in enumerate(available):
+            typer.echo(f"{i}  {reader}")
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: fetch-identity
+# ---------------------------------------------------------------------------
+
+@app.command("fetch-identity")
+def fetch_identity_cmd(
+    reader_name: Annotated[
+        Optional[str],
+        typer.Option(
+            "--reader",
+            help=(
+                "PC/SC reader name (as shown by list-readers). "
+                "Auto-detected when exactly one reader is present."
+            ),
+        ),
+    ] = None,
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
+    json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
+    redact: bool = typer.Option(
+        False,
+        "--redact",
+        help="Replace all biographical fields with [REDACTED] (for sharing output).",
+    ),
+) -> None:
+    """Read biographical data from the cédula via a PC/SC reader.
+
+    No PIN required: the AIS applet data (names, birth date, MRZ, etc.) is
+    public and accessible without card authentication.
+
+    Note: do not run while a PKCS#11 session (sign-* commands) is active on
+    the same card -- both go through pcscd and may conflict.
+    """
+    try:
+        json_output = json_output or json_pretty
+        conn = open_reader(reader_name)
+        card = read_card(conn)
+        if json_output:
+            payload = {
+                "schema_version": _JSON_SCHEMA_VERSION,
+                **card_to_json_obj(card, redact=redact),
+            }
+            typer.echo(_json_dumps(payload, json_pretty))
+        else:
+            typer.echo(format_card_human(card, redact=redact))
+    except Exception as exc:
+        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

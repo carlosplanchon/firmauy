@@ -16,10 +16,10 @@ from pyhanko.sign.timestamps import DummyTimeStamper
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from cedula_uy_pdf_sign.xml_sign import sign_xml
-from cedula_uy_pdf_sign.xml_verify import verify_xml
+from cedula_uy_pdf_sign.xml_verify import TS_CHECK_NAME, verify_xml
 
 XML = b"<?xml version='1.0'?><root><data>hola</data></root>"
-TS_CHECK = "signature timestamp (XAdES-T)"
+TS_CHECK = TS_CHECK_NAME
 
 
 def _self_signed(cn, *, timestamping=False):
@@ -65,6 +65,9 @@ def test_xades_t_timestamp_present_and_verifies():
     ts = _check(result, TS_CHECK)
     assert ts is not None and ts.ok
     assert "genTime" in ts.detail
+    # The label must not imply trusted time: the TSA is not validated and the genTime is asserted.
+    assert "not trust-validated" in ts.name
+    assert "not verified" in ts.detail
     # integrity (incl. the timestamp binding) holds; no trust roots -> INDETERMINATE
     assert result.indication == "INDETERMINATE"
 

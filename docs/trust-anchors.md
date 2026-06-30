@@ -90,5 +90,13 @@ A basic (BES) signature carries no trusted timestamp, so certificate validity an
 evaluated **at verification time**, not at signing time. A timestamp (PAdES-T / XAdES-T / CAdES-T,
 added with `--tsa-url`) provides independent trusted-time evidence of when the signature existed.
 
+On the verification side, that evidence is only as good as the timestamp's own validation. For PDF
+(PAdES-T) and CMS (CAdES-T), pyHanko checks the embedded timestamp against the active trust
+anchors, so it counts as trusted time only when the TSA's CA is among them (e.g. supplied via
+`--ca-file`). For XML (XAdES-T), `firmauy` currently confirms only that the timestamp **binds to
+the signature**; it does **not** validate the TSA's certificate, so the reported `genTime` is what
+the TSA asserts, not verified time. Treat the XAdES-T `genTime` as informational until TSA
+validation is added.
+
 The bundled national CA certificates expire (2031) and can be rotated by the issuer; re-run
 `firmauy fetch-cas` to refresh from the network, or use `--ca-file`.

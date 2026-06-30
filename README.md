@@ -241,21 +241,25 @@ firmauy sign-xml document.xml --tsa-url https://your-tsa/endpoint   # XAdES-T
 firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint   # CAdES-T
 ```
 
-**Credentialed TSAs.** For a TSA that requires authentication, firmauy supports HTTP Basic auth and arbitrary headers (e.g. a Bearer token / API key). The password is read from an environment variable, never from the command line:
+**Credentialed TSAs.** For a TSA that requires authentication, firmauy supports HTTP Basic auth and arbitrary headers. Secrets (the Basic-auth password, a Bearer token / API key) are read from environment variables, never taken on the command line where they would be visible in the process list (`ps` / `/proc`):
 
 ```bash
 # HTTP Basic auth (password from an env var)
 TSA_PW='secret' firmauy sign-any contract.zip \
   --tsa-url https://your-tsa/endpoint --tsa-user alice --tsa-pass-env TSA_PW
 
-# Bearer token / API key via a custom header (repeatable)
+# Bearer token / API key via a header whose value is read from an env var (kept off argv)
+TSA_TOKEN="Bearer $TOKEN" firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint \
+  --tsa-header-env "Authorization: TSA_TOKEN"
+
+# Non-secret headers can be passed literally
 firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint \
-  --tsa-header "Authorization: Bearer $TOKEN"
+  --tsa-header "X-Trace-Id: abc123"
 ```
 
 TSA timestamping is **optional** and **not required** for the standard Uruguayan cédula flow (the official tools sign at the BES level, without a timestamp). It is **bring-your-own**: any external RFC 3161 TSA works. Uruguay has no free public TSA, and the accredited *qualified* timestamping services (e.g. Antel/TuID, regulated by the UCE) are gated behind subscriber credentials. So a *qualified* Uruguayan timestamp requires access you arrange separately, while any public RFC 3161 TSA still gives a technical timestamp. A timestamp adds trusted-time evidence and involves an external network request to the TSA.
 
-> Any public RFC 3161 TSA works here for a **technical** timestamp; a *qualified* timestamp requires credentials from an accredited provider (which is what `--tsa-user` / `--tsa-header` are for). Client-certificate (mTLS) TSAs are **not** supported.
+> Any public RFC 3161 TSA works here for a **technical** timestamp; a *qualified* timestamp requires credentials from an accredited provider (which is what `--tsa-user` / `--tsa-header` / `--tsa-header-env` are for). Client-certificate (mTLS) TSAs are **not** supported.
 
 ### Sign batch
 

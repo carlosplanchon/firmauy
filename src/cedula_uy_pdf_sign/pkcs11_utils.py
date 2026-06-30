@@ -99,15 +99,16 @@ def get_private_key(session: pkcs11.Session, key_id: bytes) -> pkcs11.Object:
 
 
 def has_private_key(session: pkcs11.Session, key_id: bytes) -> bool:
-    """Return True if a private key with the given ID exists on the token."""
-    try:
-        keys = list(session.get_objects({
-            pkcs11.Attribute.CLASS: pkcs11.ObjectClass.PRIVATE_KEY,
-            pkcs11.Attribute.ID: key_id,
-        }))
-        return len(keys) > 0
-    except Exception:
-        return False
+    """Return True if a private key with the given ID exists on the token.
+
+    "No key" is simply an empty result, not an error. A genuine PKCS#11 error (e.g. the device is
+    pulled mid-query) is allowed to propagate rather than being swallowed as "no key": hiding it
+    could wrongly drop the only usable certificate and surface a misleading "no key" message."""
+    keys = list(session.get_objects({
+        pkcs11.Attribute.CLASS: pkcs11.ObjectClass.PRIVATE_KEY,
+        pkcs11.Attribute.ID: key_id,
+    }))
+    return len(keys) > 0
 
 
 def select_certificate(

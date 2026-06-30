@@ -107,6 +107,8 @@ _RETRIES = 4
 _BACKOFF_BASE = 1.0       # seconds; doubles each attempt
 _BACKOFF_CAP = 10.0       # seconds; max single wait from backoff
 _MAX_RETRY_AFTER = 30.0   # cap an over-large Retry-After
+_MAX_DOWNLOAD_BYTES = 1024 * 1024   # 1 MiB; a CA certificate is a few KB, so this is ample and
+                                    # bounds memory if a (pinned) host misbehaves or is compromised.
 
 # Called before each retry wait: (url, attempt, total_attempts, exception, wait_seconds).
 RetryHook = Callable[[str, int, int, Exception, float], None]
@@ -151,7 +153,13 @@ def _download(
         try:
             req = urllib.request.Request(url, headers={"User-Agent": _USER_AGENT})
             with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 (pinned by fingerprint)
-                return resp.read()
+                data = resp.read(_MAX_DOWNLOAD_BYTES + 1)
+                if len(data) > _MAX_DOWNLOAD_BYTES:
+                    raise RuntimeError(
+                        f"{_host(url)} returned more than {_MAX_DOWNLOAD_BYTES} bytes for a "
+                        "certificate; refusing (a CA certificate is only a few KB)."
+                    )
+                return data
         except urllib.error.HTTPError as exc:
             last_exc = exc
             if exc.code not in _RETRYABLE_STATUS:

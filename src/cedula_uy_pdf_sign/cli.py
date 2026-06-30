@@ -150,7 +150,8 @@ TsaUrlOpt = Annotated[
 ]
 TsaUserOpt = Annotated[Optional[str], typer.Option("--tsa-user", help="Username for HTTP Basic auth on the TSA (requires --tsa-url and --tsa-pass-env).")]
 TsaPassEnvOpt = Annotated[Optional[str], typer.Option("--tsa-pass-env", help="Environment variable holding the TSA password for HTTP Basic auth (kept off the command line).")]
-TsaHeaderOpt = Annotated[Optional[List[str]], typer.Option("--tsa-header", help="Extra HTTP header sent to the TSA as 'Name: Value' (repeatable; e.g. a Bearer token or API key).")]
+TsaHeaderOpt = Annotated[Optional[List[str]], typer.Option("--tsa-header", help="Extra HTTP header sent to the TSA as 'Name: Value' (repeatable). The value is visible in the process list (argv); for a secret (Bearer token / API key) use --tsa-header-env instead.")]
+TsaHeaderEnvOpt = Annotated[Optional[List[str]], typer.Option("--tsa-header-env", help="Like --tsa-header but the value is read from an environment variable: 'Name: ENV_VAR' (repeatable). Keeps secrets (Bearer token / API key) off the command line.")]
 OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriting existing output file(s).")]
 ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
 QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Do not print the signer identity block (name, issuer, certificate serial, PKCS#11 ID). Use in batch/automation to keep identifying data out of logs.")]
@@ -190,23 +191,32 @@ def _print_signing_info(
         typer.echo(f"TSA:                 {tsa_url}")
 
 
+# Header names whose value is usually a secret. If passed literally via --tsa-header the value
+# lands in argv (world-readable via `ps` / /proc), so warn and point at --tsa-header-env.
+_SENSITIVE_HEADERS = frozenset({
+    "authorization", "proxy-authorization", "x-api-key", "api-key", "x-auth-token", "x-auth",
+})
+
+
 def _build_timestamper(
     *,
     tsa_url: Optional[str],
     tsa_user: Optional[str],
     tsa_pass_env: Optional[str],
     tsa_header: Optional[List[str]],
+    tsa_header_env: Optional[List[str]],
 ):
     """Build an HTTPTimeStamper from the TSA options, or None when no --tsa-url is given.
 
-    Supports HTTP Basic auth (``--tsa-user`` + ``--tsa-pass-env``) and arbitrary extra
-    headers (``--tsa-header 'Name: Value'``, e.g. a Bearer token / API key) for credentialed
-    RFC 3161 TSAs. The password is read from an environment variable, never taken on the
-    command line. Raises ``typer.BadParameter`` on inconsistent options."""
+    Supports HTTP Basic auth (``--tsa-user`` + ``--tsa-pass-env``) and arbitrary extra headers for
+    credentialed RFC 3161 TSAs. A header value may be literal (``--tsa-header 'Name: Value'``) or,
+    for a secret, read from an environment variable (``--tsa-header-env 'Name: ENV_VAR'``) so it
+    never appears in argv. Passwords/secrets are never taken on the command line. Raises
+    ``typer.BadParameter`` on inconsistent options."""
     if tsa_url is None:
-        if tsa_user or tsa_pass_env or tsa_header:
+        if tsa_user or tsa_pass_env or tsa_header or tsa_header_env:
             raise typer.BadParameter(
-                "--tsa-user / --tsa-pass-env / --tsa-header require --tsa-url."
+                "--tsa-user / --tsa-pass-env / --tsa-header / --tsa-header-env require --tsa-url."
             )
         return None
 
@@ -223,18 +233,38 @@ def _build_timestamper(
             )
         auth = (tsa_user, password)
 
-    headers = None
-    if tsa_header:
-        headers = {}
-        for item in tsa_header:
-            name, sep, value = item.partition(":")
-            if not sep or not name.strip():
-                raise typer.BadParameter(
-                    f"--tsa-header '{item}' must be in 'Name: Value' format."
-                )
-            headers[name.strip()] = value.strip()
+    headers: dict = {}
+    # Literal headers: the value is on the command line. Warn if one looks like a credential.
+    for item in (tsa_header or []):
+        name, sep, value = item.partition(":")
+        if not sep or not name.strip():
+            raise typer.BadParameter(
+                f"--tsa-header '{item}' must be in 'Name: Value' format."
+            )
+        nm = name.strip()
+        if nm.lower() in _SENSITIVE_HEADERS:
+            typer.secho(
+                f"Warning: the value of --tsa-header '{nm}' is visible in the process list (argv). "
+                "Use --tsa-header-env to read it from an environment variable instead.",
+                fg=typer.colors.YELLOW, err=True,
+            )
+        headers[nm] = value.strip()
+    # Env-backed headers: the value is read from an environment variable, kept off argv.
+    for item in (tsa_header_env or []):
+        name, sep, env_var = item.partition(":")
+        if not sep or not name.strip() or not env_var.strip():
+            raise typer.BadParameter(
+                f"--tsa-header-env '{item}' must be in 'Name: ENV_VAR' format."
+            )
+        val = os.environ.get(env_var.strip())
+        if val is None:
+            raise typer.BadParameter(
+                f"Environment variable '{env_var.strip()}' "
+                f"(from --tsa-header-env '{name.strip()}') is not set."
+            )
+        headers[name.strip()] = val
 
-    return HTTPTimeStamper(tsa_url, auth=auth, headers=headers)
+    return HTTPTimeStamper(tsa_url, auth=auth, headers=headers or None)
 
 
 def _warn_image_opacity_unused(image, image_mode, image_opacity) -> None:
@@ -303,6 +333,11 @@ def _sign_one_pdf(
     image_opacity: float = DEFAULT_IMAGE_OPACITY,
 ) -> None:
     """Sign a single PDF. Raises on any error."""
+    if input_pdf.resolve() == output_pdf.resolve():
+        raise RuntimeError(
+            f"Input and output are the same file: {output_pdf}. "
+            "Choose a different output path (in batch mode, adjust --output-dir or --suffix)."
+        )
     if output_pdf.exists() and not overwrite:
         raise RuntimeError(
             f"Output file already exists: {output_pdf}\n"
@@ -385,6 +420,8 @@ def _sign_one_pdf(
             # mid-signing (e.g. the card is pulled) then never leaves a partial/corrupt file at
             # output_pdf, and with --overwrite it never destroys the previous good output either.
             # (The XML/CMS paths are already safe: they build the bytes fully, then write.)
+            # os.replace also *replaces* an output symlink with the signed file instead of writing
+            # through it, so a pre-created symlink cannot redirect the output to another location.
             tmp_out = output_pdf.with_name(output_pdf.name + ".part")
             try:
                 with tmp_out.open("wb") as outf:
@@ -603,6 +640,7 @@ def sign_pdf(
     tsa_user: TsaUserOpt = None,
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
@@ -624,6 +662,7 @@ def sign_pdf(
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
+            tsa_header_env=tsa_header_env,
         )
 
         if input_pdf.resolve() == output_pdf.resolve():
@@ -765,6 +804,7 @@ def sign_pdf_batch(
     tsa_user: TsaUserOpt = None,
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
@@ -783,6 +823,7 @@ def sign_pdf_batch(
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
+            tsa_header_env=tsa_header_env,
         )
 
         # Build (input, output) jobs. Files from --input-dir keep their sub-directory structure
@@ -947,6 +988,11 @@ def _sign_one_xml(
     timestamper=None,
 ) -> None:
     """Sign a single XML (XAdES-BES, or XAdES-T with a timestamper). Raises on any error."""
+    if input_xml.resolve() == output_xml.resolve():
+        raise RuntimeError(
+            f"Input and output are the same file: {output_xml}. "
+            "Choose a different output path (in batch mode, adjust --output-dir or --suffix)."
+        )
     if output_xml.exists() and not overwrite:
         raise RuntimeError(
             f"Output file already exists: {output_xml}\n"
@@ -976,6 +1022,11 @@ def _sign_one_cms(
     overwrite: bool,
 ) -> None:
     """Sign a single file as a detached CAdES-BES ``.p7s``. Raises on any error."""
+    if input_file.resolve() == output_p7s.resolve():
+        raise RuntimeError(
+            f"Input and output are the same file: {output_p7s}. "
+            "Choose a different output path (in batch mode, adjust --output-dir or --suffix)."
+        )
     if output_p7s.exists() and not overwrite:
         raise RuntimeError(
             f"Output file already exists: {output_p7s}\n"
@@ -1035,6 +1086,7 @@ def sign_xml_cmd(
     tsa_user: TsaUserOpt = None,
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1058,6 +1110,7 @@ def sign_xml_cmd(
 
         timestamper = _build_timestamper(
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
+            tsa_header_env=tsa_header_env,
         )
 
         lib = load_pkcs11_lib(pkcs11_lib)
@@ -1130,6 +1183,7 @@ def sign_xml_batch(
     tsa_user: TsaUserOpt = None,
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1139,6 +1193,7 @@ def sign_xml_batch(
         _validate_timezone(timezone)
         timestamper = _build_timestamper(
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
+            tsa_header_env=tsa_header_env,
         )
         # (input, output) jobs: --input-dir files keep their sub-directory structure under
         # --output-dir (so equally-named files in different sub-folders do not collide when
@@ -1249,6 +1304,7 @@ def sign_any(
     tsa_user: TsaUserOpt = None,
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1263,6 +1319,7 @@ def sign_any(
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
+            tsa_header_env=tsa_header_env,
         )
 
         if input_file.resolve() == output_p7s.resolve():
@@ -1355,6 +1412,7 @@ def sign_any_batch(
     tsa_user: TsaUserOpt = None,
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1370,6 +1428,7 @@ def sign_any_batch(
             tsa_user=tsa_user,
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
+            tsa_header_env=tsa_header_env,
         )
 
         # (input_file, output_p7s) jobs. Positional files are named by basename; files found
@@ -1510,13 +1569,15 @@ def _print_verify_result(result, prefix: str = "", redact: bool = False) -> None
     """Print one verification result (signer + per-check breakdown)."""
     if prefix:
         typer.echo(prefix)
+    issuer = _redact_issuer(result.issuer, result.signer) if redact else result.issuer
     typer.echo(f"Signer:  {_display_name(result.signer, redact)}")
-    typer.echo(f"Issuer:  {_display_name(result.issuer)}")
+    typer.echo(f"Issuer:  {_display_name(issuer)}")
     typer.echo("")
     for c in result.checks:
         mark = "PASS" if c.ok else "FAIL"
         color = typer.colors.GREEN if c.ok else typer.colors.RED
-        typer.secho(f"  [{mark}] {c.name}" + (f"  ({c.detail})" if c.detail else ""), fg=color)
+        detail = _redact_detail(c.detail) if redact else c.detail
+        typer.secho(f"  [{mark}] {c.name}" + (f"  ({detail})" if detail else ""), fg=color)
     typer.echo("")
 
 
@@ -1543,13 +1604,42 @@ def _redact_signer(signer: dict) -> dict:
     return out
 
 
+def _redact_detail(detail: str) -> str:
+    """A check ``detail`` is free text: a coverage name, a genTime, but also a raw chain-validation
+    error that embeds the certificate subject DN (holder name + document number). For a shareable
+    --redact output we cannot reliably tell which details carry personal data, so any non-empty
+    detail is hidden; the check ``name`` and PASS/FAIL stay, which is what makes the report useful."""
+    return "[REDACTED]" if detail else detail
+
+
+def _redact_issuer(issuer: dict, signer: dict) -> dict:
+    """The issuer of a cédula is a public CA (the Ministerio del Interior), so it is kept under
+    --redact. But for a self-issued certificate the issuer *is* the holder, and keeping it would
+    defeat --redact; redact the issuer's personal fields in that (only) case."""
+    self_issued = (
+        bool(issuer.get("common_name"))
+        and issuer.get("common_name") == signer.get("common_name")
+        and issuer.get("serial_number") == signer.get("serial_number")
+    )
+    if not self_issued:
+        return issuer
+    out = dict(issuer)
+    for k in ("common_name", "serial_number"):
+        if out.get(k):
+            out[k] = "[REDACTED]"
+    return out
+
+
 def _result_to_json_obj(result, redact: bool) -> dict:
     return {
         "indication": result.indication,
         "signer": _redact_signer(result.signer) if redact else result.signer,
-        "issuer": result.issuer,
+        "issuer": _redact_issuer(result.issuer, result.signer) if redact else result.issuer,
         "trusted": result.trusted,
-        "checks": [{"name": c.name, "ok": c.ok, "detail": c.detail} for c in result.checks],
+        "checks": [
+            {"name": c.name, "ok": c.ok, "detail": _redact_detail(c.detail) if redact else c.detail}
+            for c in result.checks
+        ],
     }
 
 
@@ -1807,10 +1897,14 @@ def _detect_signature_kind(path: Path) -> str:
         head = f.read(1024)
         if not head:
             raise ValueError("file is empty")
-        if head.find(b"%PDF-") != -1:
-            return "pdf"
-        if head.lstrip(b"\xef\xbb\xbf").lstrip()[:1] == b"<":   # UTF-8 BOM + leading whitespace
+        # Logical start: skip a UTF-8 BOM and any leading whitespace.
+        start = head.lstrip(b"\xef\xbb\xbf").lstrip()
+        if start[:1] == b"<":
             return "xml"
+        # The PDF header must be at the (logical) start, not merely somewhere in the first KB, so
+        # an XML or CMS that only *contains* the bytes "%PDF-" is not misdetected as a PDF.
+        if start.startswith(b"%PDF-"):
+            return "pdf"
         raw = head + f.read()   # not PDF/XML: read the rest and try to parse it as CMS DER
     try:
         ci = asn1cms.ContentInfo.load(raw)

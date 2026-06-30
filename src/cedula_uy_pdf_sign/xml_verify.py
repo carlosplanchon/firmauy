@@ -87,13 +87,23 @@ def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -
         return False, f"{type(exc).__name__}: {str(exc)[:120]}"
 
 
+# The XAdES-T timestamp check only proves the RFC 3161 token *binds* to this signature; it does
+# NOT validate the TSA's certificate (no trusted timestamping list exists for the Uruguayan
+# cédula, and the token is an unsigned property anyway). The name and detail say so explicitly,
+# so a passing check is never mistaken for trusted, verified time.
+TS_CHECK_NAME = "signature timestamp present (XAdES-T, TSA not trust-validated)"
+
+
 def _verify_timestamp(sig) -> Optional[Check]:
     """If a XAdES-T <SignatureTimeStamp> is present, check that its RFC 3161 token binds to the
     signature: its messageImprint must equal the digest of the canonicalized <ds:SignatureValue>.
-    Reports genTime. Returns None for a plain XAdES-BES signature (no timestamp).
+    Returns None for a plain XAdES-BES signature (no timestamp).
 
-    This confirms the timestamp covers *this* signature; it does not validate the TSA's own
-    certificate chain (no trusted timestamping list is consulted)."""
+    This confirms the timestamp covers *this* signature; it does NOT validate the TSA's own
+    certificate chain. So the genTime is only what the (unverified) TSA asserts: an attacker who
+    can alter the file can substitute a token from any TSA with an arbitrary genTime and still pass
+    this check. The check name and detail flag that explicitly; trusted time would require
+    validating the token against a trusted TSA (a future --tsa-ca)."""
     from asn1crypto import cms as asn1cms
 
     ets = sig.find(f".//{_xades('SignatureTimeStamp')}/{_xades('EncapsulatedTimeStamp')}")
@@ -108,10 +118,11 @@ def _verify_timestamp(sig) -> Optional[Check]:
         expected = hashlib.new(algo, _c14n(sv)).digest()
         gen_time = tst_info["gen_time"].native
     except Exception as exc:
-        return Check("signature timestamp (XAdES-T)", False, f"could not parse timestamp: {str(exc)[:80]}")
+        return Check(TS_CHECK_NAME, False, f"could not parse timestamp: {str(exc)[:80]}")
     if mi["hashed_message"].native == expected:
-        return Check("signature timestamp (XAdES-T)", True, f"genTime {gen_time.isoformat()}")
-    return Check("signature timestamp (XAdES-T)", False, "timestamp does not match the signature value")
+        return Check(TS_CHECK_NAME, True,
+                     f"genTime {gen_time.isoformat()} (asserted by the TSA, not verified)")
+    return Check(TS_CHECK_NAME, False, "timestamp does not match the signature value")
 
 
 def verify_xml(
@@ -171,11 +182,16 @@ def verify_xml(
     except Exception as exc:
         checks.append(Check("SignedInfo signature (RSA-SHA256)", False, str(exc)[:80]))
 
-    # 4. XAdES SigningCertificate binding (CertDigest == sha256(cert))
+    # 4. XAdES SigningCertificate binding (CertDigest == sha256(cert)). Required by XAdES-BES, so a
+    # missing binding is a failed check, not silently skipped: without it the signed properties do
+    # not commit to *which* certificate signed, weakening the cert-to-signature binding.
     cd = sig.find(f".//{_xades('CertDigest')}/{_ds('DigestValue')}")
     if cd is not None:
         ok = (cd.text or "").strip() == _sha256_b64(cert_der)
         checks.append(Check("SigningCertificate binding", ok))
+    else:
+        checks.append(Check("SigningCertificate binding", False,
+                            "missing (no XAdES SigningCertificate)"))
 
     # Core integrity (the checks above) decides INVALID. The XAdES-T timestamp is an *unsigned*
     # property, so a problem with it must never make the core signature INVALID nor block chain

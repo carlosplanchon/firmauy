@@ -82,6 +82,51 @@ def test_emit_verify_redact_hides_signer_keeps_issuer(capsys):
     assert sig["issuer"]["common_name"] == "AC MI"     # issuer (public CA) never redacted
 
 
+def test_emit_verify_redact_hides_pii_in_check_detail(capsys):
+    # A chain-validation detail can embed the cert subject DN (holder name + document number).
+    # --redact must scrub it from both JSON and human output, while keeping it without --redact.
+    leaky = 'InvalidCertificateError: self-signed - "Common Name: PEREZ PEREZ JUAN, Serial Number: DNI12345678"'
+    r = VerifyResult(
+        "INDETERMINATE",
+        [Check("coverage (whole file)", True, "ENTIRE_FILE"),
+         Check("certificate chain to trusted root", False, leaky)],
+        signer={"common_name": "PEREZ PEREZ JUAN", "serial_number": "DNI12345678"},
+        issuer={"common_name": "AC MI"},
+    )
+
+    # JSON, redacted: no PII anywhere; non-empty details become [REDACTED].
+    _emit_verify([r], json_output=True, redact=True)
+    out = capsys.readouterr().out
+    assert "PEREZ" not in out and "DNI12345678" not in out
+    checks = json.loads(out)["signatures"][0]["checks"]
+    assert all(c["detail"] == "[REDACTED]" for c in checks)
+
+    # Human, redacted: no PII in the printed details either.
+    _emit_verify([r], json_output=False, redact=True)
+    assert "PEREZ" not in capsys.readouterr().out
+
+    # Without --redact, the detail is preserved (diagnostic value when debugging locally).
+    _emit_verify([r], json_output=True, redact=False)
+    out = capsys.readouterr().out
+    assert "PEREZ PEREZ JUAN" in out and "ENTIRE_FILE" in out
+
+
+def test_emit_verify_redact_redacts_self_issued_issuer(capsys):
+    # The issuer (a public CA) is normally kept, but a self-issued cert's issuer *is* the holder,
+    # so keeping it would defeat --redact.
+    holder = {"common_name": "PEREZ JUAN", "serial_number": "DNI9"}
+    r = VerifyResult("INDETERMINATE", [], signer=dict(holder), issuer=dict(holder))
+    _emit_verify([r], json_output=True, redact=True)
+    out = capsys.readouterr().out
+    assert "PEREZ" not in out and "DNI9" not in out
+    assert json.loads(out)["signatures"][0]["issuer"]["common_name"] == "[REDACTED]"
+
+    # A normal (different) public-CA issuer is still kept.
+    r2 = VerifyResult("INDETERMINATE", [], signer=dict(holder), issuer={"common_name": "AC MI"})
+    _emit_verify([r2], json_output=True, redact=True)
+    assert json.loads(capsys.readouterr().out)["signatures"][0]["issuer"]["common_name"] == "AC MI"
+
+
 def test_emit_verify_pretty_is_indented(capsys):
     r = VerifyResult("VALID", [], signer={"common_name": "X"}, issuer={}, trusted=True)
     _emit_verify([r], json_output=True, pretty=True)
@@ -236,6 +281,24 @@ def test_detect_signature_kind_and_original(tmp_path):
 
     assert _detached_original(p7s) == tmp_path / "doc.bin"
     assert _detached_original(tmp_path / "x.txt") is None
+
+
+def test_detect_kind_not_fooled_by_embedded_pdf_marker(tmp_path):
+    # An XML/text that merely *contains* "%PDF-" must not be misdetected as a PDF (#6); the header
+    # is only honoured at the logical start of the file.
+    xml = tmp_path / "doc.xml"
+    xml.write_bytes(b"<?xml version='1.0'?><root><note>see %PDF-1.7 spec</note></root>")
+    assert _detect_signature_kind(xml) == "xml"
+
+    # A real PDF (header at the start, optionally after a BOM / whitespace) is still detected.
+    assert _detect_signature_kind_bytes(tmp_path, b"%PDF-1.7\n...") == "pdf"
+    assert _detect_signature_kind_bytes(tmp_path, b"\xef\xbb\xbf%PDF-1.7\n") == "pdf"
+
+
+def _detect_signature_kind_bytes(tmp_path, data: bytes) -> str:
+    p = tmp_path / "probe.bin"
+    p.write_bytes(data)
+    return _detect_signature_kind(p)
 
 
 def test_verify_autodetect_cms_locates_original(tmp_path):
@@ -491,3 +554,52 @@ def test_sign_pdf_overwrite_failure_keeps_previous_output(tmp_path, monkeypatch)
     _run_failing_sign(tmp_path, monkeypatch, out, overwrite=True)
     assert out.read_bytes() == b"PREVIOUS GOOD OUTPUT"
     assert list(tmp_path.glob("*.part")) == []
+
+
+def test_sign_pdf_output_symlink_is_replaced_not_followed(tmp_path):
+    # The atomic os.replace replaces an output symlink with the signed file instead of writing
+    # through it. Pin that (safer) behavior: the symlink's previous target is left untouched,
+    # so an attacker pre-creating the output as a symlink cannot redirect the write.
+    from pyhanko.sign import signers
+
+    from cedula_uy_pdf_sign import cli
+
+    inp = tmp_path / "in.pdf"
+    inp.write_bytes(_valid_pdf_bytes())
+    target = tmp_path / "real.pdf"
+    target.write_bytes(b"ORIGINAL TARGET CONTENT")
+    out = tmp_path / "out.pdf"
+    out.symlink_to(target)
+
+    meta = signers.PdfSignatureMetadata(field_name="Sig1", md_algorithm=None)
+    cli._sign_one_pdf(
+        input_pdf=inp, output_pdf=out, pkcs11_signer=_software_signer(),
+        signer_name="X", issuer_name="Y", cert_serial="1", timestamper=None,
+        meta=meta, page=-1, x1=20, y1=20, x2=225, y2=90,
+        timezone="America/Montevideo", field_name="Sig1", force=False, overwrite=True)
+
+    assert not out.is_symlink()                                # symlink replaced by a regular file
+    assert out.read_bytes().startswith(b"%PDF")                # which holds the signed PDF
+    assert target.read_bytes() == b"ORIGINAL TARGET CONTENT"   # the old target is untouched
+
+
+def test_sign_one_helpers_reject_input_equals_output(tmp_path):
+    # The guard lives in the _sign_one_* helpers, so batch mode is covered too (the single
+    # commands also guard before the PIN). It fires first, before any signing, so dummy args are
+    # fine. This is the data-loss case of sign-*-batch --suffix "" with --output-dir == input dir.
+    from cedula_uy_pdf_sign import cli
+
+    p = tmp_path / "a.bin"
+    p.write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="same file"):
+        cli._sign_one_pdf(
+            input_pdf=p, output_pdf=p, pkcs11_signer=None, signer_name="", issuer_name="",
+            cert_serial="", timestamper=None, meta=None, page=-1, x1=20, y1=20, x2=225, y2=90,
+            timezone="UTC", field_name="Sig1", force=False, overwrite=True)
+    with pytest.raises(RuntimeError, match="same file"):
+        cli._sign_one_xml(
+            input_xml=p, output_xml=p, cert=None, signer=None,
+            signing_time=datetime.datetime.now(), overwrite=True, timestamper=None)
+    with pytest.raises(RuntimeError, match="same file"):
+        cli._sign_one_cms(
+            input_file=p, output_p7s=p, pkcs11_signer=None, timestamper=None, overwrite=True)

@@ -29,8 +29,8 @@ class _FakeResp:
     def __exit__(self, *exc):
         return False
 
-    def read(self):
-        return self._data
+    def read(self, amt=None):
+        return self._data if amt is None else self._data[:amt]
 
 
 def _httperror(code, retry_after=None):
@@ -144,6 +144,23 @@ def test_download_invokes_on_retry_and_honours_retry_after(monkeypatch):
     url, attempt, total, exc, delay = notes[0]
     assert attempt == 1 and total == national_ca._RETRIES
     assert delay == 2.0  # Retry-After header honoured over backoff
+
+
+def test_download_caps_oversized_response(monkeypatch):
+    # A (pinned) host returning a huge body must be refused, not read into memory unbounded.
+    monkeypatch.setattr(national_ca.time, "sleep", lambda _s: None)
+    big = b"x" * (national_ca._MAX_DOWNLOAD_BYTES + 10)
+    monkeypatch.setattr(national_ca.urllib.request, "urlopen",
+                        lambda req, timeout=30: _FakeResp(big))
+    with pytest.raises(RuntimeError, match="more than"):
+        national_ca._download("https://crt.sh/?d=1")
+
+
+def test_download_accepts_response_at_the_cap(monkeypatch):
+    # A normal small certificate (well under the cap) is returned unchanged.
+    monkeypatch.setattr(national_ca.urllib.request, "urlopen",
+                        lambda req, timeout=30: _FakeResp(b"CERT-BYTES"))
+    assert national_ca._download("https://crt.sh/?d=1") == b"CERT-BYTES"
 
 
 # --- _retry_after_seconds parsing -------------------------------------------

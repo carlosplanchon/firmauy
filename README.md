@@ -791,13 +791,15 @@ Fields absent on a specific card (e.g. no second lastname) are omitted from the 
 
 ### Read the cardholder's photo
 
-`firmauy fetch-photo` saves the cardholder's photo (a JPEG, AIS file `7004`) to a file. Like the biographical data, **no PIN is required**: the photo is public card data. Because it is a binary image it is always written to a file, **never printed to the terminal**.
+`firmauy fetch-photo` saves the cardholder's photo (a JPEG, AIS file `7004`) to a file. Like the biographical data, **no PIN is required**: the photo is public card data. By default it writes a file; pass `-` as the output to stream the raw JPEG to **stdout** instead, so you can pipe or redirect it. To avoid dumping binary to the screen, streaming to an **interactive terminal is refused** (redirect or pipe it).
 
 ```bash
 firmauy fetch-photo                  # saves to cedula_foto.jpg
 firmauy fetch-photo my_photo.jpg     # explicit output path
 firmauy fetch-photo --reader "..."   # select a reader (see list-readers)
 firmauy fetch-photo --overwrite      # replace an existing output file
+firmauy fetch-photo - > my_photo.jpg # stream the raw JPEG to stdout (redirect)
+firmauy fetch-photo - | feh -        # ...or pipe it straight to a viewer, no file on disk
 ```
 
 The same caveat as `fetch-identity` applies: do not run it while a `sign-*` command is active on the same card. The photo is the most sensitive field on the card, so treat the output file accordingly.

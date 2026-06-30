@@ -634,3 +634,95 @@ def test_sign_one_helpers_reject_input_equals_output(tmp_path):
     with pytest.raises(RuntimeError, match="same file"):
         cli._sign_one_cms(
             input_file=p, output_p7s=p, pkcs11_signer=None, timestamper=None, overwrite=True)
+
+
+# --- fetch-photo output sink: file, stdout stream ("-"), and the TTY guard ------------------------
+
+_JPEG = b"\xff\xd8\xff" + b"\x00" * 50 + b"\xff\xd9"
+
+
+class _FakeConn:
+    """A card connection stub that records whether it was disconnected (finally-cleanup)."""
+    def __init__(self):
+        self.disconnected = False
+
+    def disconnect(self):
+        self.disconnected = True
+
+
+def _patch_card(monkeypatch, conn):
+    from cedula_uy_pdf_sign import cli
+    monkeypatch.setattr(cli, "open_reader", lambda name=None: conn)
+    monkeypatch.setattr(cli, "read_photo", lambda c: _JPEG)
+
+
+def test_fetch_photo_dash_streams_raw_jpeg_to_stdout(monkeypatch):
+    # `fetch-photo -` writes the raw JPEG bytes to stdout (for pipes/redirects) and nothing else:
+    # the status line must go to stderr so it never corrupts the stream.
+    import io
+    from pathlib import Path
+
+    from cedula_uy_pdf_sign import cli
+
+    conn = _FakeConn()
+    _patch_card(monkeypatch, conn)
+
+    class _Stdout:
+        def __init__(self):
+            self.buffer = io.BytesIO()
+
+        def isatty(self):
+            return False                       # piped/redirected, not a terminal
+
+    fake = _Stdout()
+    monkeypatch.setattr(cli.sys, "stdout", fake)
+
+    cli.fetch_photo_cmd(output=Path("-"), reader_name=None, overwrite=False)
+
+    assert fake.buffer.getvalue() == _JPEG     # exactly the JPEG, no status text leaked to stdout
+    assert conn.disconnected                   # the connection was closed in the finally block
+
+
+def test_fetch_photo_dash_refuses_interactive_terminal(monkeypatch, capsys):
+    # Streaming to a TTY would dump binary to the screen; refuse before even opening the card.
+    from pathlib import Path
+
+    import typer
+
+    from cedula_uy_pdf_sign import cli
+
+    opened = {"n": 0}
+
+    def _should_not_open(name=None):
+        opened["n"] += 1
+        return _FakeConn()
+
+    monkeypatch.setattr(cli, "open_reader", _should_not_open)
+
+    class _Tty:
+        def isatty(self):
+            return True                        # interactive terminal
+        # deliberately no .buffer: the guard must fire before any write
+
+    monkeypatch.setattr(cli.sys, "stdout", _Tty())
+
+    with pytest.raises(typer.Exit):
+        cli.fetch_photo_cmd(output=Path("-"), reader_name=None, overwrite=False)
+
+    assert opened["n"] == 0                     # guarded before touching the reader
+    assert "terminal" in capsys.readouterr().err.lower()
+
+
+def test_fetch_photo_to_file_writes_bytes_and_reports_on_stdout(tmp_path, monkeypatch, capsys):
+    # The default (a path) still writes the JPEG to disk and reports on stdout.
+    from cedula_uy_pdf_sign import cli
+
+    conn = _FakeConn()
+    _patch_card(monkeypatch, conn)
+
+    out = tmp_path / "foto.jpg"
+    cli.fetch_photo_cmd(output=out, reader_name=None, overwrite=False)
+
+    assert out.read_bytes() == _JPEG
+    assert conn.disconnected
+    assert "Photo saved" in capsys.readouterr().out

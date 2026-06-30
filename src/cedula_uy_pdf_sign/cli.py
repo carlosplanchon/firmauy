@@ -5,6 +5,7 @@
 import json
 import os
 import shutil
+import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -2275,7 +2276,11 @@ def fetch_identity_cmd(
 @app.command("fetch-photo")
 def fetch_photo_cmd(
     output: Annotated[
-        Path, typer.Argument(help="Output JPEG path. Default: cedula_foto.jpg")
+        Path,
+        typer.Argument(
+            help='Output JPEG path, or "-" to stream the raw JPEG to stdout (for pipes/redirects). '
+                 "Default: cedula_foto.jpg"
+        ),
     ] = Path("cedula_foto.jpg"),
     reader_name: Annotated[
         Optional[str],
@@ -2289,16 +2294,25 @@ def fetch_photo_cmd(
         False, "--overwrite", help="Allow overwriting an existing output file."
     ),
 ) -> None:
-    """Save the cardholder's photo (a JPEG) from the cédula to a file, via a PC/SC reader.
+    """Save the cardholder's photo (a JPEG) from the cédula, via a PC/SC reader.
 
-    No PIN required: the photo (AIS file 7004) is public, like the biographical data. The image is
-    always written to the chosen file, never printed to the terminal.
+    No PIN required: the photo (AIS file 7004) is public, like the biographical data. By default the
+    image is written to a file; pass "-" as the output to stream the raw JPEG to stdout instead, so it
+    can be piped or redirected (e.g. `firmauy fetch-photo - | feh -`, or `firmauy fetch-photo - >
+    foto.jpg`). Streaming to an interactive terminal is refused, to avoid dumping binary to the screen.
 
     Note: do not run while a PKCS#11 session (sign-* commands) is active on the same card; both go
     through pcscd and may conflict.
     """
+    to_stdout = str(output) == "-"
     try:
-        if output.exists() and not overwrite:
+        if to_stdout:
+            if sys.stdout.isatty():
+                raise RuntimeError(
+                    "Refusing to write binary JPEG to a terminal. Redirect or pipe it, e.g. "
+                    "`firmauy fetch-photo - > foto.jpg` or `firmauy fetch-photo - | feh -`."
+                )
+        elif output.exists() and not overwrite:
             raise RuntimeError(
                 f"Output file already exists: {output}\nUse --overwrite to overwrite it."
             )
@@ -2310,9 +2324,16 @@ def fetch_photo_cmd(
                 conn.disconnect()
             except Exception:
                 pass
-        ensure_output_parent(output)
-        output.write_bytes(photo)
-        typer.secho(f"Photo saved: {output} ({len(photo)} bytes)", fg=typer.colors.GREEN)
+        if to_stdout:
+            sys.stdout.buffer.write(photo)
+            sys.stdout.buffer.flush()
+            # Status goes to stderr so it never corrupts the JPEG stream on stdout.
+            typer.secho(f"Photo streamed to stdout ({len(photo)} bytes).",
+                        fg=typer.colors.GREEN, err=True)
+        else:
+            ensure_output_parent(output)
+            output.write_bytes(photo)
+            typer.secho(f"Photo saved: {output} ({len(photo)} bytes)", fg=typer.colors.GREEN)
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

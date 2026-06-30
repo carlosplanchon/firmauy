@@ -2308,7 +2308,7 @@ def fetch_photo_cmd(
     No PIN required: the photo (AIS file 7004) is public, like the biographical data. By default the
     image is written to a file; pass "-" as the output to stream the raw JPEG to stdout instead, so it
     can be piped or redirected (e.g. `firmauy fetch-photo - | feh -`, or `firmauy fetch-photo - >
-    foto.jpg`). Streaming to an interactive terminal is refused, to avoid dumping binary to the screen.
+    cedula_foto.jpg`). Streaming to an interactive terminal is refused, to avoid dumping binary to the screen.
 
     With --json (or --json-pretty) a self-describing record is written to stdout instead: format, MIME
     type, pixel dimensions, byte count, SHA-256 and the base64-encoded image. --redact drops the image
@@ -2326,13 +2326,13 @@ def fetch_photo_cmd(
                 raise RuntimeError(
                     "--json / --json-pretty write the photo record to stdout and cannot be combined "
                     "with a file path or '-'. Redirect instead, e.g. "
-                    "`firmauy fetch-photo --json > photo.json`."
+                    "`firmauy fetch-photo --json > cedula_foto.json`."
                 )
         elif to_stdout:
             if sys.stdout.isatty():
                 raise RuntimeError(
                     "Refusing to write binary JPEG to a terminal. Redirect or pipe it, e.g. "
-                    "`firmauy fetch-photo - > foto.jpg` or `firmauy fetch-photo - | feh -`."
+                    "`firmauy fetch-photo - > cedula_foto.jpg` or `firmauy fetch-photo - | feh -`."
                 )
         elif output.exists() and not overwrite:
             raise RuntimeError(

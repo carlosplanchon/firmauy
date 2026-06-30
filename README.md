@@ -37,7 +37,7 @@ The CLI tool is invoked as `firmauy` and supports:
 - configuring the visible signature position
 - selecting the signature page
 - discovering PC/SC readers, PKCS#11 tokens and certificates
-- reading the cardholder's public biographical data and photo from the card, without a PIN (`fetch-identity` / `fetch-photo`)
+- reading the cardholder's biographical data and photo from the card, without a PIN (`fetch-identity` / `fetch-photo`)
 - diagnosing the local setup with `doctor`
 - non-interactive PIN sources for controlled automation workflows
 
@@ -715,7 +715,7 @@ PASS  bundled national CA certificates: root + intermediate loaded
 
 ### Read biographical data from the card
 
-`firmauy fetch-identity` reads the biographical data stored in the card's AIS applet (names, birth date, nationality, birthplace, document number and MRZ) directly via PC/SC. **No PIN is required**: this data is publicly accessible without card authentication. The applet, file identifiers and APDUs follow [AGESIC's public technical documentation](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay) for the ID Uruguay card (ISO/IEC 7816, ICAO 9303).
+`firmauy fetch-identity` reads the biographical data stored in the card's AIS applet (names, birth date, nationality, birthplace, document number and MRZ) directly via PC/SC. This data is accessible from the card without PIN authentication, but it is still **personal data**. The applet, file identifiers and APDUs follow [AGESIC's public technical documentation](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay) for the ID Uruguay card (ISO/IEC 7816, ICAO 9303).
 
 > ⚠️ Do not run `fetch-identity` while a `sign-*` command is active on the same card. Both paths go through `pcscd` and may conflict on the same card connection.
 
@@ -791,17 +791,18 @@ Fields absent on a specific card (e.g. no second lastname) are omitted from the 
 
 ### Read the cardholder's photo
 
-`firmauy fetch-photo` saves the cardholder's photo (a JPEG, AIS file `7004`) to a file. Like the biographical data, **no PIN is required**: the photo is public card data. By default it writes a file; pass `-` as the output to stream the raw JPEG to **stdout** instead, so you can pipe or redirect it. To avoid dumping binary to the screen, streaming to an **interactive terminal is refused** (redirect or pipe it).
+`firmauy fetch-photo` saves the cardholder's photo (a JPEG, AIS file `7004`) to a file. Like the biographical data, this data is accessible from the card without PIN authentication, but it is still **personal data**. By default it writes a file; pass `-` as the output to stream the raw JPEG to **stdout** instead, so you can pipe or redirect it. To avoid dumping binary to the screen, streaming to an **interactive terminal is refused** (redirect or pipe it).
 
 ```bash
-firmauy fetch-photo                  # saves to cedula_foto.jpg
-firmauy fetch-photo my_photo.jpg     # explicit output path
-firmauy fetch-photo --reader "..."   # select a reader (see list-readers)
-firmauy fetch-photo --overwrite      # replace an existing output file
-firmauy fetch-photo - > my_photo.jpg # stream the raw JPEG to stdout (redirect)
-firmauy fetch-photo - | feh -        # ...or pipe it straight to a viewer, no file on disk
-firmauy fetch-photo --json           # a JSON record (metadata + base64 image) on stdout
-firmauy fetch-photo --json --redact  # ...without the image or any correlatable value
+firmauy fetch-photo                      # saves to cedula_foto.jpg
+firmauy fetch-photo cedula_foto.jpg      # explicit output path
+firmauy fetch-photo --reader "..."       # select a reader (see list-readers)
+firmauy fetch-photo --overwrite          # replace an existing output file
+firmauy fetch-photo - > cedula_foto.jpg  # stream the raw JPEG to stdout (redirect)
+firmauy fetch-photo - | feh -            # ...or pipe it straight to a viewer, no file on disk
+firmauy fetch-photo --json               # a JSON record (metadata + base64 image) on stdout
+firmauy fetch-photo --json-pretty        # ...indented for humans (implies --json)
+firmauy fetch-photo --json --redact      # ...without the image or any correlatable value
 ```
 
 With `--json` (or `--json-pretty`) a self-describing record is written to stdout instead of the raw image: `format`, `mime`, pixel `width`/`height`, `bytes`, the `sha256` and the `base64`-encoded image, alongside the usual `schema_version`. It pairs with `fetch-identity --json` and embeds anywhere a data URI does (`data:image/jpeg;base64,...`).
@@ -817,7 +818,7 @@ With `--json` (or `--json-pretty`) a self-describing record is written to stdout
 { "schema_version": 1, "format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320, "base64": "[REDACTED]" }
 ```
 
-The same caveat as `fetch-identity` applies: do not run it while a `sign-*` command is active on the same card. The photo is the most sensitive field on the card, so treat the output file (and the non-redacted JSON record) accordingly.
+The same caveat as `fetch-identity` applies: do not run it while a `sign-*` command is active on the same card. The photo is the most sensitive field on the card, so treat the output file, redirected stream, or receiving application accordingly.
 
 ## Security considerations
 
@@ -840,7 +841,7 @@ Note: Optional features such as timestamping (TSA) may involve external network 
 
 Note: the signing commands print a summary that includes identifying data (signer name, certificate issuer, certificate serial number and PKCS#11 key ID). This stays on your machine, but in batch or automated pipelines that output can end up in CI or centralized logs. Pass `--quiet` (`-q`) to the `sign-pdf`, `sign-pdf-batch`, `sign-xml`, `sign-xml-batch`, `sign-any` and `sign-any-batch` commands to suppress that block while still signing.
 
-Note: `fetch-identity` reads and prints the cardholder's biographical data (names, birth date, birthplace, document number, MRZ), and `fetch-photo` writes the cardholder's photo to a file. This is public card data read without a PIN, but it is still personal: pass `--redact` to `fetch-identity` to replace every field with `[REDACTED]` before sharing its output, and treat the photo file as sensitive.
+Note: `fetch-identity` reads and prints the cardholder's biographical data (names, birth date, birthplace, document number, MRZ), and `fetch-photo` outputs the cardholder's photo (to a file, a redirected stream, or a JSON record). This data is accessible from the card without PIN authentication, but it is still personal: pass `--redact` to `fetch-identity` to replace every field with `[REDACTED]` before sharing its output, use `fetch-photo --json --redact` for a metadata-only photo record, and treat any non-redacted output (file, redirected stream, or receiving application) as sensitive.
 
 ## Signature verification
 

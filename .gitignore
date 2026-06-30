@@ -212,5 +212,9 @@ __marimo__/
 # Clipboard:
 clipboard/
 
-# Cardholder photo extracted by `firmauy fetch-photo` (personal data; never commit)
+# Cardholder data extracted by `firmauy fetch-photo` / `fetch-identity` (personal; never commit).
+# cedula_foto.* covers the default name (incl. cedula_foto.json); the root-level rules below catch
+# any photo saved under another name while testing. The banner lives in assets/, so it is unaffected.
 cedula_foto.*
+/*.jpg
+/*.jpeg

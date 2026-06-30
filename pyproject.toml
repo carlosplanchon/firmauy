@@ -41,7 +41,7 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/carlosplanchon/cedula-uy-pdf-sign"
+Repository = "https://github.com/carlosplanchon/firmauy"
 
 [project.scripts]
 firmauy = "cedula_uy_pdf_sign.cli:app"

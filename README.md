@@ -1,13 +1,13 @@
 # cedula-uy-pdf-sign
 
-![cedula-uy-pdf-sign banner](https://raw.githubusercontent.com/carlosplanchon/cedula-uy-pdf-sign/main/assets/banner_firmauy.jpg)
+![cedula-uy-pdf-sign banner](https://raw.githubusercontent.com/carlosplanchon/firmauy/main/assets/banner_firmauy.jpg)
 
 Sign and verify PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) locally using a Uruguayan national ID card (cédula) through PKCS#11. Standards-based signatures that verify with standard validators, with local chain validation to the Uruguayan national root.
 
 [![PyPI version](https://img.shields.io/pypi/v/cedula-uy-pdf-sign.svg)](https://pypi.org/project/cedula-uy-pdf-sign/)
 [![Python versions](https://img.shields.io/pypi/pyversions/cedula-uy-pdf-sign.svg)](https://pypi.org/project/cedula-uy-pdf-sign/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/carlosplanchon/cedula-uy-pdf-sign)
+[![DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/carlosplanchon/firmauy)
 
 > ⚠️ **Disclaimer**: This tool performs **local, technical** signing and verification using open standards. It is experimental, community-maintained, **not affiliated with AGESIC**, **not officially certified**, and **does not guarantee legal validity**. For official validation, use the [official AGESIC validator](https://firma.gub.uy/); see [Legal and compliance](#legal-and-compliance) for details.
 
@@ -960,8 +960,8 @@ The project uses [`uv`](https://docs.astral.sh/uv/) for environment and dependen
 
 ```bash
 # Clone the repository
-git clone https://github.com/carlosplanchon/cedula-uy-pdf-sign.git
-cd cedula-uy-pdf-sign
+git clone https://github.com/carlosplanchon/firmauy.git
+cd firmauy
 
 # Create the environment and install dependencies (runtime + dev)
 uv sync

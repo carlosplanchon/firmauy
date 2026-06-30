@@ -4,8 +4,8 @@ The project uses [`uv`](https://docs.astral.sh/uv/) for environment and dependen
 
 ```bash
 # Clone the repository
-git clone https://github.com/carlosplanchon/cedula-uy-pdf-sign.git
-cd cedula-uy-pdf-sign
+git clone https://github.com/carlosplanchon/firmauy.git
+cd firmauy
 
 # Create the environment and install dependencies (runtime + dev)
 uv sync

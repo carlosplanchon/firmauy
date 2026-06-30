@@ -9,7 +9,7 @@ offline out of the box. This document is the deep dive.
 ## Bundled certificates, verified against pinned fingerprints
 
 The package **bundles** the two national CA certificates as built-in trust anchors (public
-certificates, see [`data/PROVENANCE.md`](https://github.com/carlosplanchon/cedula-uy-pdf-sign/blob/main/src/cedula_uy_pdf_sign/data/PROVENANCE.md)).
+certificates, see [`data/PROVENANCE.md`](https://github.com/carlosplanchon/firmauy/blob/main/src/cedula_uy_pdf_sign/data/PROVENANCE.md)).
 Verification uses them automatically, so it works offline with no setup; `firmauy fetch-cas` can
 refresh them from the sources below into a per-user cache (which then takes precedence over the
 bundled copies).

@@ -725,7 +725,7 @@ PASS  bundled national CA certificates: root + intermediate loaded
 
 ### Read biographical data from the card
 
-`firmauy fetch-identity` reads the biographical data stored in the card's AIS applet (names, birth date, nationality, birthplace, document number and MRZ) directly via PC/SC. This data is accessible from the card without PIN authentication, but it is still **personal data**. The applet, file identifiers and APDUs follow [AGESIC's public technical documentation](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay) for the ID Uruguay card (ISO/IEC 7816, ICAO 9303).
+`firmauy fetch-identity` reads the biographical data stored in the card's AIS applet (names, birth date, nationality, birthplace, document number and MRZ) directly via PC/SC. This data is accessible from the card without PIN authentication, but it is still **personal data**. The applet, file identifiers and APDUs follow [AGESIC's public technical documentation](https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay/documentacion-tecnica-id-uruguay-9) for the ID Uruguay card (ISO/IEC 7816, ICAO 9303).
 
 > ⚠️ Do not run `fetch-identity` while a `sign-*` command is active on the same card. Both paths go through `pcscd` and may conflict on the same card connection.
 

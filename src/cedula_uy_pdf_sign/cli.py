@@ -34,6 +34,7 @@ from cedula_uy_pdf_sign.card_reader import (
     format_card_human,
     list_readers,
     open_reader,
+    photo_to_json_obj,
     read_card,
     read_photo,
 )
@@ -2293,6 +2294,14 @@ def fetch_photo_cmd(
     overwrite: bool = typer.Option(
         False, "--overwrite", help="Allow overwriting an existing output file."
     ),
+    json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
+    json_pretty: bool = typer.Option(False, "--json-pretty", help=_JSON_PRETTY_OPT_HELP),
+    redact: bool = typer.Option(
+        False,
+        "--redact",
+        help="In --json output, drop the image and any value that could fingerprint or correlate "
+             "the cardholder (SHA-256, byte count), keeping only format and pixel dimensions.",
+    ),
 ) -> None:
     """Save the cardholder's photo (a JPEG) from the cédula, via a PC/SC reader.
 
@@ -2301,12 +2310,25 @@ def fetch_photo_cmd(
     can be piped or redirected (e.g. `firmauy fetch-photo - | feh -`, or `firmauy fetch-photo - >
     foto.jpg`). Streaming to an interactive terminal is refused, to avoid dumping binary to the screen.
 
+    With --json (or --json-pretty) a self-describing record is written to stdout instead: format, MIME
+    type, pixel dimensions, byte count, SHA-256 and the base64-encoded image. --redact drops the image
+    and the correlatable values, leaving only the non-identifying shape of the file.
+
     Note: do not run while a PKCS#11 session (sign-* commands) is active on the same card; both go
     through pcscd and may conflict.
     """
     to_stdout = str(output) == "-"
+    json_output = json_output or json_pretty
     try:
-        if to_stdout:
+        if json_output:
+            # --json prints a text record to stdout; a binary file path or "-" would be ambiguous.
+            if output != Path("cedula_foto.jpg"):
+                raise RuntimeError(
+                    "--json / --json-pretty write the photo record to stdout and cannot be combined "
+                    "with a file path or '-'. Redirect instead, e.g. "
+                    "`firmauy fetch-photo --json > photo.json`."
+                )
+        elif to_stdout:
             if sys.stdout.isatty():
                 raise RuntimeError(
                     "Refusing to write binary JPEG to a terminal. Redirect or pipe it, e.g. "
@@ -2324,7 +2346,13 @@ def fetch_photo_cmd(
                 conn.disconnect()
             except Exception:
                 pass
-        if to_stdout:
+        if json_output:
+            payload = {
+                "schema_version": _JSON_SCHEMA_VERSION,
+                **photo_to_json_obj(photo, redact=redact),
+            }
+            typer.echo(_json_dumps(payload, json_pretty))
+        elif to_stdout:
             sys.stdout.buffer.write(photo)
             sys.stdout.buffer.flush()
             # Status goes to stderr so it never corrupts the JPEG stream on stdout.

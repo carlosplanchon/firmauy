@@ -800,9 +800,24 @@ firmauy fetch-photo --reader "..."   # select a reader (see list-readers)
 firmauy fetch-photo --overwrite      # replace an existing output file
 firmauy fetch-photo - > my_photo.jpg # stream the raw JPEG to stdout (redirect)
 firmauy fetch-photo - | feh -        # ...or pipe it straight to a viewer, no file on disk
+firmauy fetch-photo --json           # a JSON record (metadata + base64 image) on stdout
+firmauy fetch-photo --json --redact  # ...without the image or any correlatable value
 ```
 
-The same caveat as `fetch-identity` applies: do not run it while a `sign-*` command is active on the same card. The photo is the most sensitive field on the card, so treat the output file accordingly.
+With `--json` (or `--json-pretty`) a self-describing record is written to stdout instead of the raw image: `format`, `mime`, pixel `width`/`height`, `bytes`, the `sha256` and the `base64`-encoded image, alongside the usual `schema_version`. It pairs with `fetch-identity --json` and embeds anywhere a data URI does (`data:image/jpeg;base64,...`).
+
+```json
+{ "schema_version": 1, "format": "jpeg", "mime": "image/jpeg",
+  "width": 240, "height": 320, "bytes": 10159, "sha256": "...", "base64": "/9j/4AAQ..." }
+```
+
+`--redact` drops the image **and** every value that could fingerprint or correlate the cardholder (the `sha256` of a face photo is a stable per-card identifier, and the byte count leaks the same way), leaving only the non-identifying shape of the file, so the record is safe to log or share:
+
+```json
+{ "schema_version": 1, "format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320, "base64": "[REDACTED]" }
+```
+
+The same caveat as `fetch-identity` applies: do not run it while a `sign-*` command is active on the same card. The photo is the most sensitive field on the card, so treat the output file (and the non-redacted JSON record) accordingly.
 
 ## Security considerations
 

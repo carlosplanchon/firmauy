@@ -677,7 +677,8 @@ def test_fetch_photo_dash_streams_raw_jpeg_to_stdout(monkeypatch):
     fake = _Stdout()
     monkeypatch.setattr(cli.sys, "stdout", fake)
 
-    cli.fetch_photo_cmd(output=Path("-"), reader_name=None, overwrite=False)
+    cli.fetch_photo_cmd(output=Path("-"), reader_name=None, overwrite=False,
+                        json_output=False, json_pretty=False, redact=False)
 
     assert fake.buffer.getvalue() == _JPEG     # exactly the JPEG, no status text leaked to stdout
     assert conn.disconnected                   # the connection was closed in the finally block
@@ -707,7 +708,8 @@ def test_fetch_photo_dash_refuses_interactive_terminal(monkeypatch, capsys):
     monkeypatch.setattr(cli.sys, "stdout", _Tty())
 
     with pytest.raises(typer.Exit):
-        cli.fetch_photo_cmd(output=Path("-"), reader_name=None, overwrite=False)
+        cli.fetch_photo_cmd(output=Path("-"), reader_name=None, overwrite=False,
+                        json_output=False, json_pretty=False, redact=False)
 
     assert opened["n"] == 0                     # guarded before touching the reader
     assert "terminal" in capsys.readouterr().err.lower()
@@ -721,8 +723,67 @@ def test_fetch_photo_to_file_writes_bytes_and_reports_on_stdout(tmp_path, monkey
     _patch_card(monkeypatch, conn)
 
     out = tmp_path / "foto.jpg"
-    cli.fetch_photo_cmd(output=out, reader_name=None, overwrite=False)
+    cli.fetch_photo_cmd(output=out, reader_name=None, overwrite=False,
+                        json_output=False, json_pretty=False, redact=False)
 
     assert out.read_bytes() == _JPEG
     assert conn.disconnected
     assert "Photo saved" in capsys.readouterr().out
+
+
+# --- fetch-photo --json record (stdout, redaction, conflict with a file/'-') ----------------------
+
+def test_fetch_photo_json_emits_record_to_stdout(monkeypatch, capsys):
+    import base64
+    from pathlib import Path
+
+    from cedula_uy_pdf_sign import cli
+
+    conn = _FakeConn()
+    _patch_card(monkeypatch, conn)
+
+    cli.fetch_photo_cmd(output=Path("cedula_foto.jpg"), reader_name=None, overwrite=False,
+                        json_output=True, json_pretty=False, redact=False)
+
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["schema_version"] == 1
+    assert obj["format"] == "jpeg" and obj["mime"] == "image/jpeg"
+    assert obj["bytes"] == len(_JPEG)
+    assert base64.b64decode(obj["base64"]) == _JPEG     # the record carries the exact image
+    assert conn.disconnected
+
+
+def test_fetch_photo_json_redact_drops_image_and_hash(monkeypatch, capsys):
+    from pathlib import Path
+
+    from cedula_uy_pdf_sign import cli
+
+    _patch_card(monkeypatch, _FakeConn())
+
+    cli.fetch_photo_cmd(output=Path("cedula_foto.jpg"), reader_name=None, overwrite=False,
+                        json_output=True, json_pretty=False, redact=True)
+
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["base64"] == "[REDACTED]"
+    assert "sha256" not in obj and "bytes" not in obj   # no per-card fingerprint leaks
+
+
+def test_fetch_photo_json_rejects_file_path(monkeypatch, capsys):
+    # --json writes to stdout; pairing it with a file path (or "-") is a conflict, caught before
+    # the card is even opened.
+    from pathlib import Path
+
+    import typer
+
+    from cedula_uy_pdf_sign import cli
+
+    opened = {"n": 0}
+    monkeypatch.setattr(cli, "open_reader",
+                        lambda name=None: opened.__setitem__("n", opened["n"] + 1))
+
+    with pytest.raises(typer.Exit):
+        cli.fetch_photo_cmd(output=Path("out.jpg"), reader_name=None, overwrite=False,
+                            json_output=True, json_pretty=False, redact=False)
+
+    assert opened["n"] == 0
+    assert "cannot be combined" in capsys.readouterr().err.lower()

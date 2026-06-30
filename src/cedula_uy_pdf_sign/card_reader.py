@@ -14,6 +14,8 @@ layout follow AGESIC's public technical documentation for the ID Uruguay card (I
 https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay
 """
 
+import base64
+import hashlib
 from typing import Optional
 
 AIS_AID = [0xA0, 0x00, 0x00, 0x00, 0x18, 0x40, 0x00, 0x00, 0x01, 0x63, 0x42, 0x00]
@@ -139,6 +141,34 @@ def parse_photo(data: list) -> Optional[bytes]:
     # Fallback: an unexpected wrapper -- locate the JPEG by its start-of-image marker.
     j = b.find(b"\xff\xd8\xff")
     return b[j:] if j != -1 else None
+
+
+def _jpeg_dimensions(jpeg: bytes) -> Optional[tuple]:
+    """Return (width, height) from the JPEG's Start-Of-Frame marker, or None.
+
+    Pure Python, no image library: walk the JPEG segments until an SOFn marker (FF C0..CF, excluding
+    the non-SOF markers DHT/JPG/DAC) and read the 16-bit height and width it carries."""
+    n = len(jpeg)
+    if n < 4 or jpeg[0] != 0xFF or jpeg[1] != 0xD8:        # must start with SOI
+        return None
+    i = 2
+    while i + 9 <= n:
+        if jpeg[i] != 0xFF:
+            i += 1
+            continue
+        marker = jpeg[i + 1]
+        if marker == 0xD9 or 0xD0 <= marker <= 0xD7:       # EOI / RSTn: no length field
+            i += 2
+            continue
+        if 0xC0 <= marker <= 0xCF and marker not in (0xC4, 0xC8, 0xCC):   # SOFn (not DHT/JPG/DAC)
+            height = (jpeg[i + 5] << 8) | jpeg[i + 6]
+            width = (jpeg[i + 7] << 8) | jpeg[i + 8]
+            return width, height
+        seg_len = (jpeg[i + 2] << 8) | jpeg[i + 3]          # other segments: skip by length
+        if seg_len < 2:
+            break
+        i += 2 + seg_len
+    return None
 
 
 # ── High-level read ───────────────────────────────────────────────────────────
@@ -299,4 +329,25 @@ def card_to_json_obj(card: dict, redact: bool = False) -> dict:
         out["document_number"] = "[REDACTED]" if redact else card["doc_num"]
     if card["mrz"] is not None:
         out["mrz"] = "[REDACTED]" if redact else card["mrz"]
+    return out
+
+
+def photo_to_json_obj(photo: bytes, redact: bool = False) -> dict:
+    """Build the JSON-serialisable record for the cardholder's photo.
+
+    The full form carries the image (base64) plus identifying metadata (byte count, SHA-256). With
+    ``redact`` the image and every value that could fingerprint or correlate the cardholder are
+    dropped (the SHA-256 of a face photo is a stable per-card identifier, and the byte count leaks
+    the same way), leaving only the non-identifying shape of the file: format, MIME type and pixel
+    dimensions, which are the same for every card."""
+    out: dict = {"format": "jpeg", "mime": "image/jpeg"}
+    dims = _jpeg_dimensions(photo)
+    if dims is not None:
+        out["width"], out["height"] = dims
+    if redact:
+        out["base64"] = "[REDACTED]"
+        return out
+    out["bytes"] = len(photo)
+    out["sha256"] = hashlib.sha256(photo).hexdigest()
+    out["base64"] = base64.b64encode(photo).decode("ascii")
     return out

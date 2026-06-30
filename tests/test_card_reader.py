@@ -4,6 +4,8 @@ These exercise only the pure functions (no PC/SC / pyscard, no card), in particu
 hides *every* biographical field: an identity dump is all personal data, so a partial redaction
 (e.g. leaking birth date or birthplace) would defeat the purpose."""
 
+import base64
+import hashlib
 import json
 
 from cedula_uy_pdf_sign.card_reader import (
@@ -13,7 +15,9 @@ from cedula_uy_pdf_sign.card_reader import (
     parse_doc_number,
     parse_mrz,
     parse_photo,
+    photo_to_json_obj,
     _fmt_date,
+    _jpeg_dimensions,
 )
 
 
@@ -166,3 +170,46 @@ def test_read_photo_end_to_end_with_fake_card():
 
     card = _FakeCard(bytes(_ber_tlv(b"\x3f\x01", _JPEG)))   # file 7004 as on the card
     assert read_photo(card) == _JPEG                        # full path: applet -> file -> JPEG
+
+
+# --- photo JSON record (dimensions, metadata, redaction) --------------------
+
+def _jpeg_with_dims(width: int, height: int) -> bytes:
+    """A minimal JPEG carrying a real SOF0 frame header, so dimensions are parseable."""
+    soi = b"\xff\xd8"
+    app0 = b"\xff\xe0\x00\x10" + b"JFIF\x00" + b"\x00" * 9          # APP0, length 0x10 (skipped)
+    sof0 = (b"\xff\xc0\x00\x11\x08"                                 # SOF0, length 0x11, precision 8
+            + bytes([height >> 8, height & 0xFF])
+            + bytes([width >> 8, width & 0xFF])
+            + b"\x03" + b"\x00" * 9)                                # 3 components
+    return soi + app0 + sof0 + b"\xff\xd9"
+
+
+def test_jpeg_dimensions_reads_sof_past_other_segments():
+    assert _jpeg_dimensions(_jpeg_with_dims(240, 320)) == (240, 320)
+
+
+def test_jpeg_dimensions_none_when_absent():
+    assert _jpeg_dimensions(b"\xff\xd8\xff\xd9") is None     # SOI + EOI only, no frame
+    assert _jpeg_dimensions(b"not a jpeg at all") is None
+
+
+def test_photo_to_json_obj_full_round_trips_image():
+    jpeg = _jpeg_with_dims(240, 320)
+    obj = photo_to_json_obj(jpeg, redact=False)
+    assert obj["format"] == "jpeg" and obj["mime"] == "image/jpeg"
+    assert obj["width"] == 240 and obj["height"] == 320
+    assert obj["bytes"] == len(jpeg)
+    assert obj["sha256"] == hashlib.sha256(jpeg).hexdigest()
+    assert base64.b64decode(obj["base64"]) == jpeg          # decodes back to the exact image
+
+
+def test_photo_to_json_obj_redacted_drops_image_and_correlators():
+    jpeg = _jpeg_with_dims(240, 320)
+    obj = photo_to_json_obj(jpeg, redact=True)
+    assert obj["base64"] == "[REDACTED]"
+    # A photo's SHA-256 (and byte count) is a stable per-card fingerprint: it must not survive redaction.
+    assert "sha256" not in obj and "bytes" not in obj
+    assert obj["width"] == 240 and obj["height"] == 320     # non-identifying shape is kept
+    blob = json.dumps(obj)
+    assert base64.b64encode(jpeg).decode() not in blob      # the image never appears, in any form

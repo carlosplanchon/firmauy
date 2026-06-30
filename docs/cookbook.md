@@ -147,6 +147,20 @@ firmauy sign-pdf contrato.pdf --pin-source fd --pin-fd 3 3< pin.txt
 
 ## AdES formats
 
+Sign without thinking about the format: `sign` picks PAdES / XAdES / detached CAdES from the file:
+
+```bash
+firmauy sign contrato.pdf --verify    # PDF -> PAdES
+firmauy sign factura.xml --verify     # XML -> XAdES
+firmauy sign payload.zip --verify     # anything else -> detached .p7s
+```
+
+Sign a whole mixed folder (PDFs, XMLs, anything) in a single PKCS#11 session, with one PIN prompt:
+
+```bash
+firmauy sign-batch --input-dir contracts --output-dir signed --recursive --verify
+```
+
 Sign an XML document (XAdES), then verify it:
 
 ```bash

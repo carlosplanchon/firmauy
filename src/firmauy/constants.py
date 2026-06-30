@@ -11,6 +11,14 @@ class ImageMode(str, Enum):
     only = "only"               # image only, no text
 
 
+class SignAs(str, Enum):
+    """The signature type for the unified `sign` / `sign-batch` commands."""
+    auto = "auto"     # detect by file content: PDF -> pdf, XML -> xml, else -> cades
+    pdf = "pdf"       # force PAdES (embedded PDF signature)
+    xml = "xml"       # force XAdES (enveloped XML signature)
+    cades = "cades"   # force detached CAdES (.p7s), for any input including PDF/XML
+
+
 # Default opacity for an image in --image-mode background (subtle watermark, keeps text legible).
 DEFAULT_IMAGE_OPACITY = 0.2
 

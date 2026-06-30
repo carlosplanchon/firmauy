@@ -478,3 +478,75 @@ def test_cert_id_overrides_selection(softhsm, sample_pdf, tmp_path):
     )
     assert proc.returncode == 0, _output(proc)
     assert "GENERIC NON IDENTITY" in _output(proc)
+
+
+# ---------------------------------------------------------------------------
+# Unified sign / sign-batch (auto-detect + dispatch) over SoftHSM2.
+# ---------------------------------------------------------------------------
+
+def _provision(softhsm, tmp_path) -> None:
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+
+
+_SIGN_COMMON = ("--token-label", "test-cedula", "--pin-source", "stdin")
+
+
+def test_unified_sign_dispatches_each_type(softhsm, sample_pdf, tmp_path):
+    _provision(softhsm, tmp_path)
+    (tmp_path / "doc.xml").write_text("<root><a>hola</a></root>")
+    (tmp_path / "payload.zip").write_bytes(b"PK\x03\x04 not really a zip")
+
+    # PDF -> PAdES (verified in place with --verify).
+    out_pdf = tmp_path / "doc_firmado.pdf"
+    p = softhsm.firmauy("sign", str(sample_pdf), str(out_pdf),
+                        "--pkcs11-lib", softhsm.module, *_SIGN_COMMON, "--verify", input_text=PIN + "\n")
+    assert p.returncode == 0, _output(p)
+    assert "PAdES" in _output(p) and out_pdf.exists()
+
+    # XML -> XAdES (default output <input>_firmado.xml).
+    p = softhsm.firmauy("sign", str(tmp_path / "doc.xml"),
+                        "--pkcs11-lib", softhsm.module, *_SIGN_COMMON, "--verify", input_text=PIN + "\n")
+    assert p.returncode == 0, _output(p)
+    assert "XAdES" in _output(p) and (tmp_path / "doc_firmado.xml").exists()
+
+    # Arbitrary file -> detached CAdES .p7s (original left untouched).
+    p = softhsm.firmauy("sign", str(tmp_path / "payload.zip"),
+                        "--pkcs11-lib", softhsm.module, *_SIGN_COMMON, "--verify", input_text=PIN + "\n")
+    assert p.returncode == 0, _output(p)
+    assert "CAdES" in _output(p) and (tmp_path / "payload.zip.p7s").exists()
+
+
+def test_unified_sign_as_cades_forces_detached_over_pdf(softhsm, sample_pdf, tmp_path):
+    _provision(softhsm, tmp_path)
+    p = softhsm.firmauy("sign", str(sample_pdf), "--as", "cades",
+                        "--pkcs11-lib", softhsm.module, *_SIGN_COMMON, "--verify", input_text=PIN + "\n")
+    assert p.returncode == 0, _output(p)
+    assert "CAdES" in _output(p)
+    assert (sample_pdf.parent / (sample_pdf.name + ".p7s")).exists()   # detached sidecar
+
+    # The PDF itself is untouched: no embedded signature was added.
+    from pyhanko.pdf_utils.reader import PdfFileReader
+    with sample_pdf.open("rb") as f:
+        assert len(PdfFileReader(f).embedded_signatures) == 0
+
+
+def test_unified_sign_batch_mixed_one_session(softhsm, sample_pdf, tmp_path):
+    _provision(softhsm, tmp_path)
+    src = tmp_path / "mixed"; src.mkdir()
+    (src / "a.pdf").write_bytes(sample_pdf.read_bytes())
+    (src / "b.xml").write_text("<root/>")
+    (src / "c.bin").write_bytes(b"\x00\x01\x02 arbitrary bytes")
+    out = tmp_path / "out"
+
+    p = softhsm.firmauy("sign-batch", "--input-dir", str(src), "--output-dir", str(out),
+                        "--pkcs11-lib", softhsm.module, *_SIGN_COMMON, "--verify", input_text=PIN + "\n")
+    assert p.returncode == 0, _output(p)
+    assert "Signed: 3/3" in _output(p)
+    assert (out / "a_firmado.pdf").exists()      # PDF -> PAdES
+    assert (out / "b_firmado.xml").exists()      # XML -> XAdES
+    assert (out / "c.bin.p7s").exists()          # other -> detached CAdES, all in ONE session

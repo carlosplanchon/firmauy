@@ -56,6 +56,7 @@ from firmauy.constants import (
     DEFAULT_Y1,
     DEFAULT_Y2,
     ImageMode,
+    SignAs,
 )
 from firmauy.pin import PinSource, get_pin
 from firmauy.pkcs11_utils import (
@@ -1536,6 +1537,366 @@ def sign_any_batch(
 
 
 # ---------------------------------------------------------------------------
+# Subcommands: sign / sign-batch (auto-detect the signature type)
+# ---------------------------------------------------------------------------
+
+def _detect_input_kind(path: Path) -> str:
+    """Detect an UNSIGNED input file's kind for signing: "pdf", "xml" or "any" (arbitrary -> CAdES).
+
+    Mirrors _detect_signature_kind's magic-byte logic, but the fallback is "any" (sign arbitrary
+    bytes as a detached CAdES .p7s) instead of attempting a CMS parse. An empty file is "any"."""
+    with path.open("rb") as f:
+        start = f.read(1024).lstrip(b"\xef\xbb\xbf").lstrip()
+    if start[:1] == b"<":
+        return "xml"
+    if start.startswith(b"%PDF-"):
+        return "pdf"
+    return "any"
+
+
+def _resolve_sign_kind(path: Path, sign_as: SignAs) -> str:
+    """Resolve the signature kind ("pdf" | "xml" | "any") for an input, honoring --as.
+
+    With SignAs.auto the kind is detected by content; otherwise the requested type is forced
+    (cades -> "any", the detached CAdES signer)."""
+    if sign_as is SignAs.auto:
+        return _detect_input_kind(path)
+    return {SignAs.pdf: "pdf", SignAs.xml: "xml", SignAs.cades: "any"}[sign_as]
+
+
+def _warn_pdf_only_options(kind, *, image, reason, location, contact_info, force,
+                           page, field_name, x1, y1, x2, y2) -> None:
+    """For a single `sign` on a non-PDF input, warn that the PDF-only appearance/field options are
+    ignored. Mirrors verify's "Note: --original is ignored for a {KIND} file" pattern, and only fires
+    when such an option was actually set (so a plain `sign x.xml` stays quiet)."""
+    if kind == "pdf":
+        return
+    if (image is not None or reason is not None or location is not None or contact_info is not None
+            or force or page != -1 or field_name != "Sig1"
+            or (x1, y1, x2, y2) != (DEFAULT_X1, DEFAULT_Y1, DEFAULT_X2, DEFAULT_Y2)):
+        typer.secho(
+            "Note: PDF appearance and field options (--image, position, --field-name, --force, "
+            f"--reason/--location/--contact-info) are ignored for a {kind.upper()} signature.",
+            fg=typer.colors.YELLOW, err=True,
+        )
+
+
+_SIGN_KIND_LABEL = {"pdf": "PAdES (PDF)", "xml": "XAdES (XML)", "any": "CAdES (.p7s)"}
+
+
+@app.command("sign")
+def sign_cmd(
+    input_file: Path = typer.Argument(
+        ..., exists=True, readable=True, dir_okay=False,
+        help="File to sign. The signature type is auto-detected: PDF -> PAdES, XML -> XAdES, "
+             "anything else -> detached CAdES (.p7s)."),
+    output: Optional[Path] = typer.Argument(
+        None,
+        help="Output path. Default per type: <input>_firmado.pdf / <input>_firmado.xml / <input>.p7s."),
+    sign_as: Annotated[SignAs, typer.Option(
+        "--as",
+        help="Force the signature type instead of auto-detecting: pdf (PAdES), xml (XAdES), "
+             "cades (detached .p7s). Default: auto.")] = SignAs.auto,
+    pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
+    token_label: TokenLabelOpt = None,
+    cert_id: CertIdOpt = None,
+    pin_source: PinSourceOpt = PinSource.prompt,
+    pin_env_var: PinEnvVarOpt = None,
+    pin_fd: PinFdOpt = None,
+    field_name: FieldNameOpt = "Sig1",
+    page: PageOpt = -1,
+    x1: X1Opt = DEFAULT_X1,
+    y1: Y1Opt = DEFAULT_Y1,
+    x2: X2Opt = DEFAULT_X2,
+    y2: Y2Opt = DEFAULT_Y2,
+    timezone: TimezoneOpt = DEFAULT_TIMEZONE,
+    reason: ReasonOpt = None,
+    location: LocationOpt = None,
+    contact_info: ContactInfoOpt = None,
+    tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
+    overwrite: OverwriteOpt = False,
+    force: ForceOpt = False,
+    quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
+    image: ImageOpt = None,
+    image_mode: ImageModeOpt = ImageMode.background,
+    image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
+) -> None:
+    """Sign a file with a Uruguayan cédula, auto-detecting the signature type.
+
+    PDF -> PAdES (embedded), XML -> XAdES (enveloped), anything else -> detached CAdES (.p7s). Pass
+    --as to force a type (for example --as cades to produce a detached .p7s over a PDF or XML). The
+    PDF appearance and field options (position, --image, --field-name, ...) apply only to a PDF.
+    """
+    try:
+        kind = _resolve_sign_kind(input_file, sign_as)
+
+        if output is None:
+            output = (input_file.with_name(input_file.name + ".p7s") if kind == "any"
+                      else input_file.with_stem(input_file.stem + "_firmado"))
+
+        if input_file.resolve() == output.resolve():
+            raise RuntimeError("Input and output files are the same. Specify a different output path.")
+        if output.exists() and not overwrite:
+            raise RuntimeError(f"Output file already exists: {output}\nUse --overwrite to overwrite it.")
+
+        if kind == "pdf":
+            _warn_image_opacity_unused(image, image_mode, image_opacity)
+            _validate_image(image)
+            if x2 <= x1 or y2 <= y1:
+                raise typer.BadParameter("Coordinates must satisfy x1 < x2 and y1 < y2.")
+            if (x2 - x1) != APPEARANCE_WIDTH or (y2 - y1) != APPEARANCE_HEIGHT:
+                typer.secho(
+                    f"Warning: signature box ({x2 - x1}x{y2 - y1}) differs from the reference size "
+                    f"({APPEARANCE_WIDTH}x{APPEARANCE_HEIGHT}). The appearance will be scaled.",
+                    fg=typer.colors.YELLOW, err=True,
+                )
+        else:
+            _warn_pdf_only_options(
+                kind, image=image, reason=reason, location=location, contact_info=contact_info,
+                force=force, page=page, field_name=field_name, x1=x1, y1=y1, x2=x2, y2=y2,
+            )
+        if kind != "any":
+            _validate_timezone(timezone)
+
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
+            tsa_header=tsa_header, tsa_header_env=tsa_header_env,
+        )
+
+        lib = load_pkcs11_lib(pkcs11_lib)
+        token = find_token(lib, token_label)
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+
+        with token.open(user_pin=final_pin) as session:
+            key_id, cert = select_certificate(session, cert_id)
+            signer_name = get_common_name(cert.subject)
+            issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
+            cert_serial = format(cert.serial_number, "X")
+            token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
+            _print_signing_info(
+                token_label_display=token_label_display, signer_name=signer_name,
+                issuer_name=issuer_name, key_id=key_id, cert_serial=cert_serial,
+                tsa_url=tsa_url, quiet=quiet,
+            )
+
+            if kind == "pdf":
+                pkcs11_signer = PKCS11Signer(pkcs11_session=session, cert_id=key_id, key_id=key_id)
+                meta = signers.PdfSignatureMetadata(
+                    field_name=field_name, reason=reason, location=location,
+                    contact_info=contact_info, md_algorithm=None,
+                )
+                _sign_one_pdf(
+                    input_pdf=input_file, output_pdf=output, pkcs11_signer=pkcs11_signer,
+                    signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
+                    timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
+                    timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
+                    image_path=image, image_mode=image_mode, image_opacity=image_opacity,
+                )
+            elif kind == "xml":
+                _sign_one_xml(
+                    input_xml=input_file, output_xml=output, cert=cert,
+                    signer=_make_raw_signer(session, key_id),
+                    signing_time=datetime.now(ZoneInfo(timezone)),
+                    overwrite=overwrite, timestamper=timestamper,
+                )
+            else:
+                pkcs11_signer = PKCS11Signer(pkcs11_session=session, cert_id=key_id, key_id=key_id)
+                _sign_one_cms(
+                    input_file=input_file, output_p7s=output, pkcs11_signer=pkcs11_signer,
+                    timestamper=timestamper, overwrite=overwrite,
+                )
+
+        if verify:
+            if kind == "pdf":
+                _verify_after_pdf(output)
+            elif kind == "xml":
+                _verify_after_xml(output)
+            else:
+                _verify_after_cms(input_file, output)
+
+        typer.secho(f"Signed as {_SIGN_KIND_LABEL[kind]}: {output}", fg=typer.colors.GREEN)
+        if verify:
+            typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
+
+    except Exception as exc:
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
+# Subcommand: sign-batch
+# ---------------------------------------------------------------------------
+
+@app.command("sign-batch")
+def sign_batch(
+    input_files: Optional[List[Path]] = typer.Argument(None, help="Files to sign (any type)."),
+    output_dir: Path = typer.Option(..., "--output-dir", help="Directory where signed outputs are saved."),
+    suffix: str = typer.Option(
+        "_firmado", "--suffix",
+        help="Suffix for PDF/XML output names. CAdES outputs are named <name>.p7s."),
+    input_dir: Optional[Path] = typer.Option(
+        None, "--input-dir",
+        help="Folder of files to sign. Can be combined with positional arguments."),
+    recursive: bool = typer.Option(False, "--recursive", help="Recursively search --input-dir."),
+    glob: str = typer.Option(
+        "*", "--glob", help="Glob selecting files in --input-dir (default: all files)."),
+    sign_as: Annotated[SignAs, typer.Option(
+        "--as",
+        help="Force one signature type for every file (pdf|xml|cades) instead of detecting each. "
+             "Default: auto.")] = SignAs.auto,
+    pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
+    token_label: TokenLabelOpt = None,
+    cert_id: CertIdOpt = None,
+    pin_source: PinSourceOpt = PinSource.prompt,
+    pin_env_var: PinEnvVarOpt = None,
+    pin_fd: PinFdOpt = None,
+    field_name: FieldNameOpt = "Sig1",
+    page: PageOpt = -1,
+    x1: X1Opt = DEFAULT_X1,
+    y1: Y1Opt = DEFAULT_Y1,
+    x2: X2Opt = DEFAULT_X2,
+    y2: Y2Opt = DEFAULT_Y2,
+    timezone: TimezoneOpt = DEFAULT_TIMEZONE,
+    reason: ReasonOpt = None,
+    location: LocationOpt = None,
+    contact_info: ContactInfoOpt = None,
+    tsa_url: TsaUrlOpt = None,
+    tsa_user: TsaUserOpt = None,
+    tsa_pass_env: TsaPassEnvOpt = None,
+    tsa_header: TsaHeaderOpt = None,
+    tsa_header_env: TsaHeaderEnvOpt = None,
+    overwrite: OverwriteOpt = False,
+    force: ForceOpt = False,
+    quiet: QuietOpt = False,
+    verify: VerifyOpt = False,
+    image: ImageOpt = None,
+    image_mode: ImageModeOpt = ImageMode.background,
+    image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
+) -> None:
+    """Sign many files of mixed types in a single PKCS#11 session.
+
+    Each file is dispatched by its detected type: PDF -> PAdES, XML -> XAdES, anything else ->
+    detached CAdES (.p7s). PDF appearance options apply to the PDF files in the mix. Pass --as to
+    force one type for every file. Per-file errors do not stop the batch; the command exits non-zero
+    if any file failed.
+    """
+    try:
+        _warn_image_opacity_unused(image, image_mode, image_opacity)
+        _validate_image(image)
+        _validate_timezone(timezone)
+        if x2 <= x1 or y2 <= y1:
+            raise typer.BadParameter("Coordinates must satisfy x1 < x2 and y1 < y2.")
+        timestamper = _build_timestamper(
+            tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
+            tsa_header=tsa_header, tsa_header_env=tsa_header_env,
+        )
+
+        # Gather (input, base): base is None for positionals, input_dir for dir-sourced (so
+        # _batch_output can preserve sub-directory structure).
+        items: list[tuple[Path, Optional[Path]]] = [(p, None) for p in (input_files or [])]
+        if input_dir is not None:
+            if not input_dir.is_dir():
+                typer.secho(f"--input-dir '{input_dir}' is not a valid directory.",
+                            fg=typer.colors.RED, err=True)
+                raise typer.Exit(code=1)
+            pattern = f"**/{glob}" if recursive else glob
+            for p in sorted(input_dir.glob(pattern)):
+                if p.is_file():
+                    items.append((p, input_dir))
+        if not items:
+            typer.secho("No input files specified. Use positional arguments or --input-dir.",
+                        fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        lib = load_pkcs11_lib(pkcs11_lib)
+        token = find_token(lib, token_label)
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+
+        with token.open(user_pin=final_pin) as session:
+            key_id, cert = select_certificate(session, cert_id)
+            signer_name = get_common_name(cert.subject)
+            issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
+            cert_serial = format(cert.serial_number, "X")
+            token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
+            _print_signing_info(
+                token_label_display=token_label_display, signer_name=signer_name,
+                issuer_name=issuer_name, key_id=key_id, cert_serial=cert_serial,
+                tsa_url=tsa_url, quiet=quiet,
+            )
+            typer.echo(f"Files to sign:       {len(items)}")
+            typer.echo("")
+
+            # A mixed batch needs both signers bound to this one open session: a PKCS11Signer
+            # (PDF/CMS) and a raw signer (XML).
+            pkcs11_signer = PKCS11Signer(pkcs11_session=session, cert_id=key_id, key_id=key_id)
+            raw_signer = _make_raw_signer(session, key_id)
+            meta = signers.PdfSignatureMetadata(
+                field_name=field_name, reason=reason, location=location,
+                contact_info=contact_info, md_algorithm=None,
+            )
+
+            ok_count = 0
+            err_count = 0
+            for input_path, base in items:
+                try:
+                    kind = _resolve_sign_kind(input_path, sign_as)
+                    if kind == "pdf":
+                        output = _batch_output(input_path, base, output_dir, ".pdf", suffix)
+                        _sign_one_pdf(
+                            input_pdf=input_path, output_pdf=output, pkcs11_signer=pkcs11_signer,
+                            signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
+                            timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
+                            timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
+                            image_path=image, image_mode=image_mode, image_opacity=image_opacity,
+                        )
+                        if verify:
+                            _verify_after_pdf(output)
+                    elif kind == "xml":
+                        output = _batch_output(input_path, base, output_dir, ".xml", suffix)
+                        _sign_one_xml(
+                            input_xml=input_path, output_xml=output, cert=cert, signer=raw_signer,
+                            signing_time=datetime.now(ZoneInfo(timezone)),
+                            overwrite=overwrite, timestamper=timestamper,
+                        )
+                        if verify:
+                            _verify_after_xml(output)
+                    else:
+                        rel = (input_path.relative_to(base).as_posix()
+                               if base is not None else input_path.name)
+                        output = output_dir / f"{rel}.p7s"
+                        _sign_one_cms(
+                            input_file=input_path, output_p7s=output, pkcs11_signer=pkcs11_signer,
+                            timestamper=timestamper, overwrite=overwrite,
+                        )
+                        if verify:
+                            _verify_after_cms(input_path, output)
+                    typer.secho(f"OK:    {output}  ({kind})", fg=typer.colors.GREEN)
+                    ok_count += 1
+                except Exception as exc:
+                    typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
+                                fg=typer.colors.RED, err=True)
+                    err_count += 1
+
+        typer.echo("")
+        typer.echo(f"Signed: {ok_count}/{len(items)}. Errors: {err_count}.")
+        if err_count:
+            raise typer.Exit(code=1)
+
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+
+# ---------------------------------------------------------------------------
 # Verification helpers (shared by verify-xml and verify-pdf)
 # ---------------------------------------------------------------------------
 
@@ -2091,7 +2452,7 @@ def fetch_cas_cmd(
         typer.secho(f"National CAs cached in {cache_dir()}", fg=typer.colors.GREEN)
         typer.echo(f"  root:         {acrn_path.name}")
         typer.echo(f"  intermediate: {mica_path.name}")
-        typer.echo("\n'firmauy verify-xml' will now validate the chain to the national root.")
+        typer.echo("\nThe verify commands will now use these cached certificates instead of the bundled copies.")
     except Exception as exc:
         typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

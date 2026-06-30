@@ -852,3 +852,116 @@ def test_validate_ci_complete_prints_completed_number():
 
 def test_validate_ci_complete_with_redact_conflicts():
     assert runner.invoke(app, ["validate-ci", "1234567", "--complete", "--redact"]).exit_code == 2
+
+
+# --- sign / sign-batch: auto-detect + dispatch ----------------------------------------------------
+
+def test_detect_input_kind(tmp_path):
+    from firmauy.cli import _detect_input_kind
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.7\n%body")
+    assert _detect_input_kind(tmp_path / "a.pdf") == "pdf"
+    (tmp_path / "a.xml").write_bytes(b"\xef\xbb\xbf  \n<?xml version='1.0'?><r/>")   # BOM + ws + decl
+    assert _detect_input_kind(tmp_path / "a.xml") == "xml"
+    (tmp_path / "b.xml").write_bytes(b"<root/>")                                      # bare root
+    assert _detect_input_kind(tmp_path / "b.xml") == "xml"
+    (tmp_path / "c.zip").write_bytes(b"PK\x03\x04 binary")
+    assert _detect_input_kind(tmp_path / "c.zip") == "any"
+    (tmp_path / "e").write_bytes(b"")                                                 # empty -> any
+    assert _detect_input_kind(tmp_path / "e") == "any"
+    (tmp_path / "f.txt").write_bytes(b"hello %PDF- not at the start")                 # not misdetected
+    assert _detect_input_kind(tmp_path / "f.txt") == "any"
+
+
+def test_resolve_sign_kind(tmp_path):
+    from firmauy.cli import _resolve_sign_kind
+    from firmauy.constants import SignAs
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.7")
+    assert _resolve_sign_kind(tmp_path / "a.pdf", SignAs.auto) == "pdf"
+    assert _resolve_sign_kind(tmp_path / "a.pdf", SignAs.cades) == "any"     # force detached over a PDF
+    (tmp_path / "a.xml").write_bytes(b"<r/>")
+    assert _resolve_sign_kind(tmp_path / "a.xml", SignAs.cades) == "any"
+    assert _resolve_sign_kind(tmp_path / "a.xml", SignAs.pdf) == "pdf"       # forced
+
+
+class _FakeCert:
+    subject = issuer = None
+    serial_number = 0x1A
+
+
+class _FakeToken:
+    label = "tok"
+
+    def open(self, user_pin=None):
+        class _Ctx:
+            def __enter__(self_): return object()      # the session
+            def __exit__(self_, *a): return False
+        return _Ctx()
+
+
+def _patch_signing(monkeypatch):
+    """Patch the PKCS#11/cert path so sign/sign-batch reach the dispatch without a card. Returns a
+    list that records (kind, output_path) for each worker call."""
+    from firmauy import cli
+    calls = []
+    monkeypatch.setattr(cli, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(cli, "find_token", lambda lib, label: _FakeToken())
+    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(cli, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(cli, "get_common_name", lambda name: "SIGNER")
+    monkeypatch.setattr(cli, "normalize_issuer_name", lambda s: "ISSUER")
+    monkeypatch.setattr(cli, "PKCS11Signer", lambda **k: object())
+    monkeypatch.setattr(cli, "_make_raw_signer", lambda session, key_id: (lambda data: b"sig"))
+    monkeypatch.setattr(cli, "_sign_one_pdf", lambda **k: calls.append(("pdf", k["output_pdf"])))
+    monkeypatch.setattr(cli, "_sign_one_xml", lambda **k: calls.append(("xml", k["output_xml"])))
+    monkeypatch.setattr(cli, "_sign_one_cms", lambda **k: calls.append(("cms", k["output_p7s"])))
+    return calls
+
+
+def test_sign_dispatches_pdf_xml_any(monkeypatch, tmp_path):
+    calls = _patch_signing(monkeypatch)
+    (tmp_path / "doc.pdf").write_bytes(b"%PDF-1.7\n")
+    assert runner.invoke(app, ["sign", str(tmp_path / "doc.pdf")]).exit_code == 0
+    assert calls[-1] == ("pdf", tmp_path / "doc_firmado.pdf")
+
+    (tmp_path / "f.xml").write_bytes(b"<r/>")
+    assert runner.invoke(app, ["sign", str(tmp_path / "f.xml")]).exit_code == 0
+    assert calls[-1] == ("xml", tmp_path / "f_firmado.xml")
+
+    (tmp_path / "p.zip").write_bytes(b"PKbin")
+    assert runner.invoke(app, ["sign", str(tmp_path / "p.zip")]).exit_code == 0
+    assert calls[-1] == ("cms", tmp_path / "p.zip.p7s")
+
+
+def test_sign_as_cades_forces_detached_over_pdf(monkeypatch, tmp_path):
+    calls = _patch_signing(monkeypatch)
+    (tmp_path / "doc.pdf").write_bytes(b"%PDF-1.7\n")
+    r = runner.invoke(app, ["sign", str(tmp_path / "doc.pdf"), "--as", "cades"])
+    assert r.exit_code == 0, r.output
+    assert calls == [("cms", tmp_path / "doc.pdf.p7s")]      # detached .p7s, not _firmado.pdf
+
+
+def test_sign_warns_pdf_only_option_on_non_pdf(monkeypatch, tmp_path):
+    calls = _patch_signing(monkeypatch)
+    (tmp_path / "logo.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    (tmp_path / "f.xml").write_bytes(b"<r/>")
+    r = runner.invoke(app, ["sign", str(tmp_path / "f.xml"), "--image", str(tmp_path / "logo.png")])
+    assert r.exit_code == 0, r.output
+    assert "ignored for a XML signature" in r.output         # the Note (PDF-only option on a non-PDF)
+    assert calls[-1][0] == "xml"                              # still routed to XML
+
+
+def test_sign_batch_mixed_folder_one_session(monkeypatch, tmp_path):
+    calls = _patch_signing(monkeypatch)
+    src = tmp_path / "src"; src.mkdir()
+    (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    (src / "b.xml").write_bytes(b"<r/>")
+    (src / "c.zip").write_bytes(b"PKbin")
+    out = tmp_path / "out"
+    r = runner.invoke(app, ["sign-batch", "--input-dir", str(src), "--output-dir", str(out)])
+    assert r.exit_code == 0, r.output
+    assert sorted(k for k, _ in calls) == ["cms", "pdf", "xml"]     # one of each, one session
+    assert "Signed: 3/3" in r.output
+    by_kind = {k: o for k, o in calls}
+    assert by_kind["pdf"].name == "a_firmado.pdf" and by_kind["pdf"].parent == out
+    assert by_kind["xml"].name == "b_firmado.xml" and by_kind["xml"].parent == out
+    assert by_kind["cms"].name == "c.zip.p7s" and by_kind["cms"].parent == out

@@ -952,6 +952,8 @@ The registration was published in the official Boletín de la Propiedad Industri
 - Classification: Programa de ordenador
 - Official publication: [Boletín de la Propiedad Industrial Nº 357](https://www.gub.uy/ministerio-industria-energia-mineria/sites/ministerio-industria-energia-mineria/files/documentos/publicaciones/Boletin%20357.pdf)
 
+The project was later renamed to **FirmaUY** (PyPI package and CLI: `firmauy`). The registration above is under its original title, `cedula-uy-pdf-sign`.
+
 This registration concerns the authorship of the software as a copyrighted work. It does **not** imply official certification, endorsement, legal validity of generated signatures, or regulatory compliance of any specific use case. See [Legal and compliance](#legal-and-compliance).
 
 ## Development
@@ -1000,7 +1002,7 @@ verification output. Use `--redact` whenever sharing command output.
 
 ## Acknowledgements
 
-- [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev): provided reference for the signature appearance inspired by signatures generated using the Uruguayan ID card (cédula), and helped test the XAdES (XML) signing feature.
+- [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev): contributed the `fetch-identity` and `list-readers` commands for reading the cardholder's biographical data over PC/SC ([#1](https://github.com/carlosplanchon/firmauy/pull/1)). Also provided reference for the signature appearance inspired by signatures generated using the Uruguayan ID card (cédula), and helped test the XAdES (XML) signing feature.
 
 ## License
 

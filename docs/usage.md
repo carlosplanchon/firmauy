@@ -153,6 +153,43 @@ Choose the source by security context (most to least contained):
 
 ⚠️ However the PIN is supplied, avoid having it appear in shell history, process lists or logs.
 
+## Native signing (no PKCS#11 middleware)
+
+Every signing command (`sign`, `sign-pdf`, `sign-xml`, `sign-any` and their `*-batch` variants)
+accepts `--native`, which signs by talking to the cédula **directly over PC/SC** (raw ISO 7816-4
+APDUs) instead of through a PKCS#11 module. It needs only `pcscd` and a reader — **not** the
+`libgclib.so` middleware — and produces the same PAdES / XAdES / CAdES output.
+
+```bash
+# Same commands as always, just add --native (prompts for the PIN once, as usual)
+firmauy sign-pdf contrato.pdf contrato_firmado.pdf --native --verify
+firmauy sign-xml factura.xml --native
+firmauy sign-any payload.zip --native
+firmauy sign documento.pdf --native            # auto-detect works too
+firmauy sign-batch --input-dir docs/ --recursive --output-dir out/ --native
+
+# Pick a reader by name when more than one is present (as shown by list-readers);
+# it is auto-detected when exactly one reader is connected.
+firmauy list-readers
+firmauy sign-pdf contrato.pdf out.pdf --native --reader "ACS ACR39U 00 00"
+```
+
+Notes and caveats:
+
+- **No PKCS#11 options.** In native mode `--pkcs11-lib`, `--token-label` and `--cert-id` do not
+  apply (there is no PKCS#11 module or token); the tool warns if you pass them. `--reader` only
+  applies with `--native`.
+- **One card at a time.** Do not run `--native` while a PKCS#11 session (another `sign-*` invocation
+  using the middleware) is active on the same card — both go through `pcscd` and will conflict. This
+  is the same caveat as `fetch-identity` / `fetch-photo`.
+- **Everything else is identical:** PIN sources (`--pin-source`), TSA timestamping (`--tsa-url`),
+  `--verify`, `--quiet`, the PDF appearance/position options and the batch flags all work unchanged.
+  The identity block prints `Reader:` instead of `Token:`.
+- **Experimental.** This backend is not officially certified. In practice its signatures verify VALID
+  locally and are accepted by the official AGESIC validator, but use it at your own risk. The
+  card-level protocol it implements is documented in the
+  [card protocol reference](card-protocol.md).
+
 ## Timestamping (TSA, optional)
 
 Embed a trusted timestamp from a Time Stamping Authority (RFC 3161), available on every signing command (`sign-pdf`, `sign-xml`, `sign-any` and their `*-batch` variants), producing the **-T** level (PAdES-T / XAdES-T / CAdES-T):

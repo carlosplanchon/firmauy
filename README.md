@@ -78,6 +78,12 @@ The default PKCS#11 module expected by this tool is:
 
 On Arch Linux, this is provided by the `cedula-uruguay-pkcs11` AUR package.
 
+> **Optional — native mode:** every signing command also accepts `--native`, which talks to the
+> cédula directly over PC/SC (pcscd + a reader) and needs **no PKCS#11 middleware** at all. It is
+> experimental (not officially certified, though its output is accepted by the AGESIC validator); see
+> [Native signing](docs/usage.md#native-signing-no-pkcs11-middleware) and the
+> [card protocol reference](docs/card-protocol.md).
+
 ## Setup on Arch Linux
 
 ### 1. Install smart card stack
@@ -121,7 +127,7 @@ Run `firmauy --help`, or `firmauy <command> --help` for the full options of any 
 examples for every command are in the **[usage guide](docs/usage.md)**, and task-oriented recipes
 (privacy, automation, `jq` pipelines) are in the **[cookbook](docs/cookbook.md)**.
 
-**Signing** (prompts for the PKCS#11 PIN, unless a [non-interactive source](docs/usage.md#non-interactive-pin) is given):
+**Signing** (prompts for the PKCS#11 PIN, unless a [non-interactive source](docs/usage.md#non-interactive-pin) is given). Add [`--native`](docs/usage.md#native-signing-no-pkcs11-middleware) to any of these to sign over PC/SC without PKCS#11:
 
 | Command | Description |
 |---|---|
@@ -160,6 +166,7 @@ examples for every command are in the **[usage guide](docs/usage.md)**, and task
 - **[Usage guide](docs/usage.md)**: step-by-step examples for every command.
 - **[Cookbook](docs/cookbook.md)**: task-oriented recipes for signing, verifying, privacy, automation and `jq` pipelines.
 - **[Trust anchors](docs/trust-anchors.md)**: the bundled national CA certificates, how trust is pinned and refreshed, and the state of revocation.
+- **[Card protocol reference](docs/card-protocol.md)**: the cédula's data model and the APDU-level signing protocol behind `--native` (native, PKCS#11-free signing).
 - **[Development](docs/development.md)**: running from source with `uv`, the test suite, and developing without the card (SoftHSM2).
 
 ## Security considerations

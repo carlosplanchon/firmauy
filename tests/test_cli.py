@@ -1122,7 +1122,8 @@ def test_sign_batch_no_false_collision_for_distinct_outputs(monkeypatch, tmp_pat
 
 def test_signing_session_yields_context_and_respects_quiet(monkeypatch, capsys):
     # The shared PKCS#11 bootstrap of every sign-* command: open the session, select the cert, print
-    # the identity block (unless --quiet), and yield the six values the command bodies unpack.
+    # the identity block (unless --quiet), and yield a backend-agnostic context whose lazy factories
+    # build the pyHanko / raw signers the command bodies consume.
     from firmauy import cli
     monkeypatch.setattr(cli, "load_pkcs11_lib", lambda lib: object())
     monkeypatch.setattr(cli, "find_token", lambda lib, label: _FakeToken())
@@ -1130,22 +1131,27 @@ def test_signing_session_yields_context_and_respects_quiet(monkeypatch, capsys):
     monkeypatch.setattr(cli, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
     monkeypatch.setattr(cli, "get_common_name", lambda name: "SIGNER")
     monkeypatch.setattr(cli, "normalize_issuer_name", lambda s: "ISSUER")
+    monkeypatch.setattr(cli, "PKCS11Signer", lambda **kw: ("pk-signer", kw))
+    monkeypatch.setattr(cli, "_make_raw_signer", lambda session, key_id: ("raw-signer", key_id))
 
-    common = dict(pkcs11_lib="lib.so", token_label=None, cert_id=None,
+    common = dict(native=False, reader=None, pkcs11_lib="lib.so", token_label=None, cert_id=None,
                   pin_source=None, pin_env_var=None, pin_fd=None, tsa_url=None)
 
-    # Not quiet: unpacks exactly like the command bodies, and prints the identity block.
-    with cli._signing_session(**common, quiet=False) as (
-        session, key_id, cert, signer_name, issuer_name, cert_serial
-    ):
-        assert session is not None and cert is not None
-        assert key_id == b"\x01"
-        assert (signer_name, issuer_name) == ("SIGNER", "ISSUER")
-        assert cert_serial == format(_FakeCert.serial_number, "X")     # "1A"
+    # Not quiet: exposes the fields the command bodies read, and prints the identity block.
+    with cli._signing_session(**common, quiet=False) as ctx:
+        assert ctx.cert is not None
+        assert (ctx.signer_name, ctx.issuer_name) == ("SIGNER", "ISSUER")
+        assert ctx.cert_serial == format(_FakeCert.serial_number, "X")     # "1A"
+        # The PKCS#11 backend builds a PKCS11Signer bound to the selected key, and the XML raw signer
+        # via _make_raw_signer; each factory is memoized (built at most once).
+        pk = ctx.pyhanko_signer()
+        assert pk[0] == "pk-signer" and pk[1]["cert_id"] == b"\x01"
+        assert ctx.pyhanko_signer() is pk                                  # cached, not rebuilt
+        assert ctx.raw_signer() == ("raw-signer", b"\x01")
     out = capsys.readouterr().out
     assert "SIGNER" in out and "ISSUER" in out and "tok" in out         # identity block printed
 
-    # Quiet: yields the same context (attribute access too) but prints nothing identifying.
+    # Quiet: yields the same context but prints nothing identifying.
     with cli._signing_session(**common, quiet=True) as ctx:
         assert ctx.signer_name == "SIGNER" and ctx.cert_serial == "1A"
     assert capsys.readouterr().out == ""                                # silent under --quiet

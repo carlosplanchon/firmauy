@@ -10,7 +10,7 @@ import tempfile
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Iterable, List, NamedTuple, Optional
+from typing import Annotated, Iterable, List, Optional
 from zoneinfo import ZoneInfo
 
 import pkcs11
@@ -38,6 +38,7 @@ from firmauy.card_reader import (
     photo_to_json_obj,
     read_card,
     read_photo,
+    select_applet,
 )
 from firmauy.cert_utils import (
     cert_not_after,
@@ -173,6 +174,8 @@ VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-ver
 ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
 ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
+NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label/--cert-id are then ignored). Experimental; not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
+ReaderOpt = Annotated[Optional[str], typer.Option("--reader", help="PC/SC reader name (as shown by list-readers) for --native. Auto-detected when exactly one reader is present.")]
 
 
 # ---------------------------------------------------------------------------
@@ -184,44 +187,90 @@ def _print_signing_info(
     token_label_display: str,
     signer_name: str,
     issuer_name: str,
-    key_id: bytes,
+    key_id: Optional[bytes],
     cert_serial: str,
     tsa_url: Optional[str],
     quiet: bool = False,
+    source_caption: str = "Token",
 ) -> None:
-    """Print the aligned signer/token summary shared by `sign-pdf` and `sign-pdf-batch`.
+    """Print the aligned signer/token summary shared by every sign-* command.
 
-    Skipped entirely when ``quiet`` is set, to keep identifying data (signer name,
-    certificate serial, PKCS#11 ID) out of automation/CI logs.
+    ``source_caption`` labels the first line: "Token" for the PKCS#11 backend, "Reader" for the
+    native PC/SC backend. ``key_id`` is the PKCS#11 object ID; pass None in native mode (there is no
+    such ID) to omit that line. Skipped entirely when ``quiet`` is set, to keep identifying data
+    (signer name, certificate serial, PKCS#11 ID) out of automation/CI logs.
     """
     if quiet:
         return
-    typer.echo(f"Token:               {token_label_display}")
+    typer.echo(f"{source_caption + ':':<21}{token_label_display}")
     typer.echo(f"Signer:              {signer_name}")
     typer.echo(f"Issuer:              {issuer_name}")
-    typer.echo(f"PKCS#11 ID:          {key_id.hex()}")
+    if key_id is not None:
+        typer.echo(f"PKCS#11 ID:          {key_id.hex()}")
     typer.echo(f"Certificate serial:  {cert_serial}")
     if tsa_url:
         typer.echo(f"TSA:                 {tsa_url}")
 
 
-class _SigningContext(NamedTuple):
-    """What _signing_session yields: the open PKCS#11 session, the selected certificate and its
-    display fields, shared by every sign-* command."""
-    session: object
-    key_id: bytes
-    cert: "x509.Certificate"
-    signer_name: str
-    issuer_name: str
-    cert_serial: str
+class _SigningContext:
+    """Backend-agnostic context yielded by ``_signing_session``.
+
+    Carries the selected certificate and its display fields, plus lazy factories for the two signer
+    shapes the sign-* commands need: a pyHanko ``Signer`` (PDF/CMS) via ``pyhanko_signer()`` and a raw
+    bytes->bytes callable (XML) via ``raw_signer()``. The factories are backend-specific (PKCS#11 vs
+    native card); each is built at most once, so a PDF-only sign never constructs the XML signer and
+    vice-versa, and a batch reuses the one instance across all files."""
+
+    def __init__(self, *, cert, signer_name, issuer_name, cert_serial,
+                 pyhanko_signer_factory, raw_signer_factory):
+        self.cert = cert
+        self.signer_name = signer_name
+        self.issuer_name = issuer_name
+        self.cert_serial = cert_serial
+        self._pyhanko_signer_factory = pyhanko_signer_factory
+        self._raw_signer_factory = raw_signer_factory
+        self._pyhanko_signer = None
+        self._raw_signer = None
+
+    def pyhanko_signer(self):
+        if self._pyhanko_signer is None:
+            self._pyhanko_signer = self._pyhanko_signer_factory()
+        return self._pyhanko_signer
+
+    def raw_signer(self):
+        if self._raw_signer is None:
+            self._raw_signer = self._raw_signer_factory()
+        return self._raw_signer
 
 
 @contextmanager
-def _signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var, pin_fd,
-                     tsa_url, quiet):
-    """Open a PKCS#11 session, select the signing certificate and print the identity block, then
-    yield everything the sign-* commands need. The session is closed on exit. Callers keep their own
-    (fail-fast, pre-PIN) validation and timestamper build."""
+def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var,
+                     pin_fd, tsa_url, quiet):
+    """Open a signing session with the selected backend and yield a ``_SigningContext``.
+
+    Dispatches to the native PC/SC backend (``--native``) or the PKCS#11 backend. Both select the
+    signing certificate, print the identity block, and expose the same signer factories, so every
+    sign-* command (single and batch) stays backend-agnostic. Callers keep their own (fail-fast,
+    pre-PIN) validation and timestamper build."""
+    if native:
+        with _native_signing_session(
+            reader=reader, pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
+            tsa_url=tsa_url, quiet=quiet,
+        ) as ctx:
+            yield ctx
+    else:
+        with _pkcs11_signing_session(
+            pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id, pin_source=pin_source,
+            pin_env_var=pin_env_var, pin_fd=pin_fd, tsa_url=tsa_url, quiet=quiet,
+        ) as ctx:
+            yield ctx
+
+
+@contextmanager
+def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var, pin_fd,
+                            tsa_url, quiet):
+    """PKCS#11 backend: load the module, open a PIN session, select the signing certificate and print
+    the identity block, then yield the context. The session is closed on exit."""
     # Validate the hex cert ID up front: a malformed --cert-id must fail before we prompt for the
     # PIN (an incorrect PIN counts toward the card's retry limit), not later inside select_certificate.
     if cert_id is not None:
@@ -240,7 +289,48 @@ def _signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin_env_va
             issuer_name=issuer_name, key_id=key_id, cert_serial=cert_serial,
             tsa_url=tsa_url, quiet=quiet,
         )
-        yield _SigningContext(session, key_id, cert, signer_name, issuer_name, cert_serial)
+        yield _SigningContext(
+            cert=cert, signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
+            pyhanko_signer_factory=lambda: PKCS11Signer(
+                pkcs11_session=session, cert_id=key_id, key_id=key_id),
+            raw_signer_factory=lambda: _make_raw_signer(session, key_id),
+        )
+
+
+@contextmanager
+def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url, quiet):
+    """Native PC/SC backend: open the reader, select the applet, read the public signing certificate,
+    verify the PIN and yield the context. No PKCS#11 module is loaded. The connection is closed on
+    exit. Do not run while a PKCS#11 sign session is open on the same card: both go through pcscd and
+    will conflict."""
+    from firmauy import native_card
+    conn = open_reader(reader)
+    try:
+        select_applet(conn)
+        cert = native_card.read_signing_certificate(conn)
+        signer_name = get_common_name(cert.subject)
+        issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
+        cert_serial = format(cert.serial_number, "X")
+        # Prompt/read the PIN only after the (PIN-free) cert read succeeds, so a reader/card problem
+        # surfaces before we ask for a PIN. verify_pin refuses to spend the card's last retry.
+        final_pin = get_pin(pin_source, pin_env_var, pin_fd)
+        native_card.verify_pin(conn, final_pin)
+        _print_signing_info(
+            token_label_display=str(reader) if reader else "<auto-detected>",
+            signer_name=signer_name, issuer_name=issuer_name, key_id=None,
+            cert_serial=cert_serial, tsa_url=tsa_url, quiet=quiet, source_caption="Reader",
+        )
+        signer = native_card.make_native_signer(conn, cert)
+        yield _SigningContext(
+            cert=cert, signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
+            pyhanko_signer_factory=lambda: signer,
+            raw_signer_factory=lambda: (lambda data: native_card.sign_message(conn, data)),
+        )
+    finally:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
 
 
 # Header names whose value is usually a secret. If passed literally via --tsa-header the value
@@ -317,6 +407,38 @@ def _build_timestamper(
         headers[name.strip()] = val
 
     return HTTPTimeStamper(tsa_url, auth=auth, headers=headers or None)
+
+
+def _warn_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id) -> None:
+    """Pre-flight (before the PIN): warn about options that don't apply to the chosen backend.
+
+    In native mode --pkcs11-lib/--token-label/--cert-id are ignored (no PKCS#11 module is loaded), and
+    the pcscd single-card caveat applies (same wording as fetch-identity). --reader only applies to
+    the native backend, so it is a no-op with PKCS#11."""
+    if native:
+        ignored = [
+            name for name, changed in (
+                ("--pkcs11-lib", pkcs11_lib != DEFAULT_PKCS11_LIB),
+                ("--token-label", token_label is not None),
+                ("--cert-id", cert_id is not None),
+            ) if changed
+        ]
+        if ignored:
+            typer.secho(
+                f"Note: {', '.join(ignored)} {'is' if len(ignored) == 1 else 'are'} ignored with "
+                "--native (no PKCS#11 module is used).",
+                fg=typer.colors.YELLOW, err=True,
+            )
+        typer.secho(
+            "Note: --native talks to the card over PC/SC; do not run while a PKCS#11 session (other "
+            "sign-* invocations) is active on the same card -- both go through pcscd and may conflict.",
+            fg=typer.colors.YELLOW, err=True,
+        )
+    elif reader is not None:
+        typer.secho(
+            "Note: --reader only applies to --native; it is ignored with the PKCS#11 backend.",
+            fg=typer.colors.YELLOW, err=True,
+        )
 
 
 def _warn_image_opacity_unused(image, image_mode, image_opacity) -> None:
@@ -711,6 +833,8 @@ def sign_pdf(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -784,17 +908,16 @@ def sign_pdf(
                 err=True,
             )
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
-
-            pkcs11_signer = PKCS11Signer(
-                pkcs11_session=session,
-                cert_id=key_id,
-                key_id=key_id,
-            )
+        ) as ctx:
 
             meta = signers.PdfSignatureMetadata(
                 field_name=field_name,
@@ -807,10 +930,10 @@ def sign_pdf(
             _sign_one_pdf(
                 input_pdf=input_pdf,
                 output_pdf=output_pdf,
-                pkcs11_signer=pkcs11_signer,
-                signer_name=signer_name,
-                issuer_name=issuer_name,
-                cert_serial=cert_serial,
+                pkcs11_signer=ctx.pyhanko_signer(),
+                signer_name=ctx.signer_name,
+                issuer_name=ctx.issuer_name,
+                cert_serial=ctx.cert_serial,
                 timestamper=timestamper,
                 meta=meta,
                 page=page,
@@ -858,6 +981,8 @@ def sign_pdf_batch(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -948,19 +1073,20 @@ def sign_pdf_batch(
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
+        ) as ctx:
             typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
-            pkcs11_signer = PKCS11Signer(
-                pkcs11_session=session,
-                cert_id=key_id,
-                key_id=key_id,
-            )
+            pkcs11_signer = ctx.pyhanko_signer()
 
             meta = signers.PdfSignatureMetadata(
                 field_name=field_name,
@@ -979,9 +1105,9 @@ def sign_pdf_batch(
                         input_pdf=input_pdf,
                         output_pdf=output_pdf,
                         pkcs11_signer=pkcs11_signer,
-                        signer_name=signer_name,
-                        issuer_name=issuer_name,
-                        cert_serial=cert_serial,
+                        signer_name=ctx.signer_name,
+                        issuer_name=ctx.issuer_name,
+                        cert_serial=ctx.cert_serial,
                         timestamper=timestamper,
                         meta=meta,
                         page=page,
@@ -1134,6 +1260,8 @@ def sign_xml_cmd(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -1169,17 +1297,22 @@ def sign_xml_cmd(
             tsa_header_env=tsa_header_env,
         )
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
+        ) as ctx:
 
             _sign_one_xml(
                 input_xml=input_xml,
                 output_xml=output_xml,
-                cert=cert,
-                signer=_make_raw_signer(session, key_id),
+                cert=ctx.cert,
+                signer=ctx.raw_signer(),
                 signing_time=datetime.now(ZoneInfo(timezone)),
                 overwrite=overwrite,
                 timestamper=timestamper,
@@ -1216,6 +1349,8 @@ def sign_xml_batch(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -1268,15 +1403,20 @@ def sign_xml_batch(
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
+        ) as ctx:
             typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
-            raw_signer = _make_raw_signer(session, key_id)
+            raw_signer = ctx.raw_signer()
 
             ok_count = 0
             err_count = 0
@@ -1286,7 +1426,7 @@ def sign_xml_batch(
                     _sign_one_xml(
                         input_xml=input_xml,
                         output_xml=output_xml,
-                        cert=cert,
+                        cert=ctx.cert,
                         signer=raw_signer,
                         signing_time=datetime.now(ZoneInfo(timezone)),
                         overwrite=overwrite,
@@ -1324,6 +1464,8 @@ def sign_any(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -1363,22 +1505,21 @@ def sign_any(
                 "Use --overwrite to overwrite it."
             )
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
-
-            pkcs11_signer = PKCS11Signer(
-                pkcs11_session=session,
-                cert_id=key_id,
-                key_id=key_id,
-            )
+        ) as ctx:
 
             _sign_one_cms(
                 input_file=input_file,
                 output_p7s=output_p7s,
-                pkcs11_signer=pkcs11_signer,
+                pkcs11_signer=ctx.pyhanko_signer(),
                 timestamper=timestamper,
                 overwrite=overwrite,
             )
@@ -1417,6 +1558,8 @@ def sign_any_batch(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -1474,19 +1617,20 @@ def sign_any_batch(
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
+        ) as ctx:
             typer.echo(f"Files to sign:       {len(jobs)}")
             typer.echo("")
 
-            pkcs11_signer = PKCS11Signer(
-                pkcs11_session=session,
-                cert_id=key_id,
-                key_id=key_id,
-            )
+            pkcs11_signer = ctx.pyhanko_signer()
 
             ok_count = 0
             err_count = 0
@@ -1585,6 +1729,8 @@ def sign_cmd(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -1653,36 +1799,40 @@ def sign_cmd(
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
         )
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
+        ) as ctx:
 
             if kind == "pdf":
-                pkcs11_signer = PKCS11Signer(pkcs11_session=session, cert_id=key_id, key_id=key_id)
                 meta = signers.PdfSignatureMetadata(
                     field_name=field_name, reason=reason, location=location,
                     contact_info=contact_info, md_algorithm=None,
                 )
                 _sign_one_pdf(
-                    input_pdf=input_file, output_pdf=output, pkcs11_signer=pkcs11_signer,
-                    signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
+                    input_pdf=input_file, output_pdf=output, pkcs11_signer=ctx.pyhanko_signer(),
+                    signer_name=ctx.signer_name, issuer_name=ctx.issuer_name,
+                    cert_serial=ctx.cert_serial,
                     timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                     timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                     image_path=image, image_mode=image_mode, image_opacity=image_opacity,
                 )
             elif kind == "xml":
                 _sign_one_xml(
-                    input_xml=input_file, output_xml=output, cert=cert,
-                    signer=_make_raw_signer(session, key_id),
+                    input_xml=input_file, output_xml=output, cert=ctx.cert,
+                    signer=ctx.raw_signer(),
                     signing_time=datetime.now(ZoneInfo(timezone)),
                     overwrite=overwrite, timestamper=timestamper,
                 )
             else:
-                pkcs11_signer = PKCS11Signer(pkcs11_session=session, cert_id=key_id, key_id=key_id)
                 _sign_one_cms(
-                    input_file=input_file, output_p7s=output, pkcs11_signer=pkcs11_signer,
+                    input_file=input_file, output_p7s=output, pkcs11_signer=ctx.pyhanko_signer(),
                     timestamper=timestamper, overwrite=overwrite,
                 )
 
@@ -1727,6 +1877,8 @@ def sign_batch(
     pkcs11_lib: Pkcs11LibOpt = DEFAULT_PKCS11_LIB,
     token_label: TokenLabelOpt = None,
     cert_id: CertIdOpt = None,
+    native: NativeOpt = False,
+    reader: ReaderOpt = None,
     pin_source: PinSourceOpt = PinSource.prompt,
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
@@ -1816,18 +1968,23 @@ def sign_batch(
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        _warn_backend_options(
+            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+            cert_id=cert_id,
+        )
         with _signing_session(
+            native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
             pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
             tsa_url=tsa_url, quiet=quiet,
-        ) as (session, key_id, cert, signer_name, issuer_name, cert_serial):
+        ) as ctx:
             typer.echo(f"Files to sign:       {len(items)}")
             typer.echo("")
 
-            # A mixed batch needs both signers bound to this one open session: a PKCS11Signer
-            # (PDF/CMS) and a raw signer (XML).
-            pkcs11_signer = PKCS11Signer(pkcs11_session=session, cert_id=key_id, key_id=key_id)
-            raw_signer = _make_raw_signer(session, key_id)
+            # A mixed batch needs both signers bound to this one open session/card: a pyHanko
+            # Signer (PDF/CMS) and a raw signer (XML).
+            pkcs11_signer = ctx.pyhanko_signer()
+            raw_signer = ctx.raw_signer()
             meta = signers.PdfSignatureMetadata(
                 field_name=field_name, reason=reason, location=location,
                 contact_info=contact_info, md_algorithm=None,
@@ -1840,7 +1997,8 @@ def sign_batch(
                     if kind == "pdf":
                         _sign_one_pdf(
                             input_pdf=input_path, output_pdf=output, pkcs11_signer=pkcs11_signer,
-                            signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
+                            signer_name=ctx.signer_name, issuer_name=ctx.issuer_name,
+                            cert_serial=ctx.cert_serial,
                             timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                             timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                             image_path=image, image_mode=image_mode, image_opacity=image_opacity,
@@ -1849,7 +2007,7 @@ def sign_batch(
                             _verify_after_pdf(output)
                     elif kind == "xml":
                         _sign_one_xml(
-                            input_xml=input_path, output_xml=output, cert=cert, signer=raw_signer,
+                            input_xml=input_path, output_xml=output, cert=ctx.cert, signer=raw_signer,
                             signing_time=datetime.now(ZoneInfo(timezone)),
                             overwrite=overwrite, timestamper=timestamper,
                         )

@@ -107,7 +107,7 @@ def verify_pin(conn, pin: str) -> None:
         # Unmodeled status word from the probe: refuse to send the PIN blind rather than risk
         # consuming the last try on a card whose retry counter we could not read.
         raise RuntimeError(
-            f"Unexpected card response {status} to the PIN status probe; refusing to send the PIN "
+            f"Unexpected card response {status} to the PIN status probe. Refusing to send the PIN "
             "with an unknown retry counter. This card may not support native mode."
         )
     if status <= 1:

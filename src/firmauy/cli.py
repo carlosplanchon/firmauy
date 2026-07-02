@@ -177,7 +177,7 @@ VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-ver
 ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
 ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
-NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label are then ignored; --cert-id is rejected, as the card has a single signing certificate). Experimental; not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
+NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label are then ignored, and --cert-id is rejected, as the card has a single signing certificate). Experimental, not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
 ReaderOpt = Annotated[Optional[str], typer.Option("--reader", help="PC/SC reader name (as shown by list-readers) for --native. Auto-detected when exactly one reader is present.")]
 AllowHybridXrefOpt = Annotated[bool, typer.Option("--allow-hybrid-xref", help="Sign PDFs that use hybrid cross-reference sections (opens the PDF non-strict). Off by default: such PDFs are rejected because the incremental signature may not be equivalent for all readers -- normalize with `qpdf in.pdf out.pdf` instead. Use at your own risk.")]
 
@@ -619,7 +619,7 @@ def _sign_one_pdf(
                     "result, or pass --allow-hybrid-xref to sign it as-is (at your own risk)."
                 )
             typer.secho(
-                f"Warning: {input_pdf.name} has hybrid cross-reference sections; signing due to "
+                f"Warning: {input_pdf.name} has hybrid cross-reference sections. Signing due to "
                 "--allow-hybrid-xref. The signature may not be equivalent for older PDF readers.",
                 fg=typer.colors.YELLOW, err=True,
             )

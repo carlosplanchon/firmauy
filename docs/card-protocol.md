@@ -98,6 +98,10 @@ DF `5000` is required before `MSE:SET DST`).
 and refuses to spend the last try (see `native_card.verify_pin`). Failed **sign** (PSO) attempts do
 not consume PIN retries once logged in.
 
+The security status also persists across *successful* signatures: one VERIFY authorizes any number
+of PSO:CDS operations in the same session (confirmed empirically with multi-file batch signing on a
+real card), i.e. the signing key is **not** marked PIN-per-signature / user-consent.
+
 ## Signing flow (APDUs)
 
 For `SHA256-RSA-PKCS` (algorithm reference `0x42` = RSA-PKCS#1 v1.5 | SHA-256, key ref `0x01`). This

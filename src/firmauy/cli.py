@@ -177,7 +177,7 @@ VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-ver
 ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
 ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
-NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label/--cert-id are then ignored). Experimental; not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
+NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label are then ignored; --cert-id is rejected, as the card has a single signing certificate). Experimental; not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
 ReaderOpt = Annotated[Optional[str], typer.Option("--reader", help="PC/SC reader name (as shown by list-readers) for --native. Auto-detected when exactly one reader is present.")]
 
 
@@ -280,7 +280,7 @@ def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin_so
     sign-* command (single and batch) stays backend-agnostic. Warns first (pre-flight, before any
     PIN prompt) about options that don't apply to the chosen backend. Callers keep their own
     (fail-fast, pre-PIN) validation and timestamper build."""
-    _warn_backend_options(
+    _check_backend_options(
         native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
         cert_id=cert_id,
     )
@@ -446,18 +446,28 @@ def _build_timestamper(
     return HTTPTimeStamper(tsa_url, auth=auth, headers=headers or None)
 
 
-def _warn_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id) -> None:
-    """Pre-flight (before the PIN): warn about options that don't apply to the chosen backend.
+def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id) -> None:
+    """Pre-flight (before any reader or PIN access): reject or warn about options that don't apply
+    to the chosen backend.
 
-    In native mode --pkcs11-lib/--token-label/--cert-id are ignored (no PKCS#11 module is loaded), and
-    the pcscd single-card caveat applies (same wording as fetch-identity). --reader only applies to
-    the native backend, so it is a no-op with PKCS#11."""
+    --cert-id is an identity-pinning guarantee ("sign only with this certificate") that the native
+    backend cannot honor -- the card exposes a single signing certificate (EF B001) and there are no
+    PKCS#11 object IDs to match -- so combining it with --native is a hard error, not a silently
+    weakened warning. --pkcs11-lib/--token-label are harmless in native mode and only warn, and the
+    pcscd single-card caveat applies (same wording as fetch-identity). --reader only applies to the
+    native backend, so it is a no-op with PKCS#11."""
     if native:
+        if cert_id is not None:
+            raise RuntimeError(
+                "--cert-id cannot be used with --native: it pins the signing identity by PKCS#11 "
+                "object ID, and the native backend always signs with the card's single signing "
+                "certificate (EF B001). Drop --cert-id, or use the PKCS#11 backend to select a "
+                "certificate by ID."
+            )
         ignored = [
             name for name, changed in (
                 ("--pkcs11-lib", pkcs11_lib != DEFAULT_PKCS11_LIB),
                 ("--token-label", token_label is not None),
-                ("--cert-id", cert_id is not None),
             ) if changed
         ]
         if ignored:

@@ -176,9 +176,12 @@ firmauy sign-pdf contrato.pdf out.pdf --native --reader "ACS ACR39U 00 00"
 
 Notes and caveats:
 
-- **No PKCS#11 options.** In native mode `--pkcs11-lib`, `--token-label` and `--cert-id` do not
-  apply (there is no PKCS#11 module or token); the tool warns if you pass them. `--reader` only
-  applies with `--native`.
+- **No PKCS#11 options.** In native mode `--pkcs11-lib` and `--token-label` do not apply (there is
+  no PKCS#11 module or token); the tool warns if you pass them. `--cert-id` is a **hard error** with
+  `--native`: it pins the signing identity by PKCS#11 object ID, a guarantee the native backend
+  cannot honor (the card has a single signing certificate), so automation that relies on it fails
+  loudly instead of silently signing with whatever card is inserted. `--reader` only applies with
+  `--native`.
 - **One card at a time.** Do not run `--native` while a PKCS#11 session (another `sign-*` invocation
   using the middleware) is active on the same card — both go through `pcscd` and will conflict. This
   is the same caveat as `fetch-identity` / `fetch-photo`.

@@ -325,3 +325,24 @@ def test_cli_native_rejects_expired_certificate(monkeypatch, tmp_path):
     assert r.exit_code != 0
     assert "expired" in r.output
     assert "disconnect" in conn.log                       # connection still closed on the way out
+
+
+def test_cli_native_rejects_cert_id(monkeypatch, tmp_path):
+    # --cert-id pins the signing identity by PKCS#11 object ID, which native mode cannot honor:
+    # combining them is a hard error BEFORE any reader or PIN access, not an ignorable warning.
+    from typer.testing import CliRunner
+    from firmauy import cli
+    from firmauy.cli import app
+
+    def _boom(*a, **k):
+        raise AssertionError("neither the reader nor the PIN may be touched when --cert-id is rejected")
+    monkeypatch.setattr(cli, "open_reader", _boom)
+    monkeypatch.setattr(cli, "get_pin", _boom)
+
+    src = tmp_path / "data.bin"
+    src.write_bytes(b"payload")
+    r = CliRunner().invoke(
+        app, ["sign-any", str(src), str(tmp_path / "data.bin.p7s"), "--native", "--cert-id", "ab01"])
+
+    assert r.exit_code != 0
+    assert "--cert-id" in r.output and "--native" in r.output

@@ -33,15 +33,18 @@ class FakeConn:
 
     ``pin_status`` is the (sw1, sw2) returned by the status-probe VERIFY (empty body); ``verify_sw``
     the answer to a real VERIFY; ``hash_sw`` the answer to PSO:HASH (default 61 20, the card's
-    success form). The 256-byte signature is delivered via GET RESPONSE, as on the real card."""
+    success form). The 256-byte signature is delivered via GET RESPONSE, as on the real card;
+    ``get_responses`` overrides it with scripted (data, sw1, sw2) answers consumed in order, to
+    exercise chained 61 xx delivery."""
 
     def __init__(self, *, pin_status=(0x90, 0x00), verify_sw=(0x90, 0x00),
-                 hash_sw=(0x61, 0x20), signature=_SIG):
+                 hash_sw=(0x61, 0x20), signature=_SIG, get_responses=None):
         self.log = []
         self._pin_status = pin_status
         self._verify_sw = verify_sw
         self._hash_sw = hash_sw
         self._signature = signature
+        self._get_responses = list(get_responses) if get_responses else None
 
     def transmit(self, apdu):
         apdu = list(apdu)
@@ -56,6 +59,9 @@ class FakeConn:
         if ins == 0x2A and (p1, p2) == (0x9E, 0x9A):      # PSO:CDS
             return ([], 0x61, 0x00)                        # 256 bytes available -> GET RESPONSE
         if ins == 0xC0:                                   # GET RESPONSE
+            if self._get_responses is not None:
+                data, sw1, sw2 = self._get_responses.pop(0)
+                return (list(data), sw1, sw2)
             return (list(self._signature), 0x90, 0x00)
         raise AssertionError(f"unexpected APDU: {bytes(apdu).hex()}")
 
@@ -63,7 +69,7 @@ class FakeConn:
         self.log.append("disconnect")
 
 
-def _make_cert():
+def _make_cert(not_before=None, not_after=None):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name([
         x509.NameAttribute(NameOID.COUNTRY_NAME, "UY"),
@@ -74,8 +80,8 @@ def _make_cert():
         x509.CertificateBuilder()
         .subject_name(subject).issuer_name(issuer)
         .public_key(key.public_key()).serial_number(0x1A)
-        .not_valid_before(datetime.datetime(2020, 1, 1))
-        .not_valid_after(datetime.datetime(2030, 1, 1))
+        .not_valid_before(not_before or datetime.datetime(2020, 1, 1))
+        .not_valid_after(not_after or datetime.datetime(2030, 1, 1))
         .sign(key, hashes.SHA256())
     )
 
@@ -129,6 +135,29 @@ def test_sign_message_accepts_61_on_hash():
     assert sign_message(conn, b"data") == _SIG
 
 
+def test_sign_message_collects_chained_get_response():
+    # A T=0 reader may deliver the 256-byte signature in chained 61 xx chunks; they must be
+    # accumulated (not overwritten), with one GET RESPONSE per announcement.
+    conn = FakeConn(get_responses=[(_SIG[:128], 0x61, 0x80), (_SIG[128:], 0x90, 0x00)])
+    assert sign_message(conn, b"data") == _SIG
+    get_responses = [a for a in conn.log if a[1] == 0xC0]
+    assert get_responses == [[0x00, 0xC0, 0x00, 0x00, 0x00], [0x00, 0xC0, 0x00, 0x00, 0x80]]
+
+
+def test_sign_message_rejects_empty_signature():
+    # Success status but no signature bytes must be a hard error, not b"" embedded in the output.
+    conn = FakeConn(signature=b"")
+    with pytest.raises(RuntimeError, match="empty signature"):
+        sign_message(conn, b"data")
+
+
+def test_sign_message_validates_expected_length():
+    # A truncated card response must fail loudly when the caller states the modulus size.
+    assert sign_message(FakeConn(), b"data", expected_len=256) == _SIG
+    with pytest.raises(RuntimeError, match="100 signature bytes, expected 256"):
+        sign_message(FakeConn(signature=_SIG[:100]), b"data", expected_len=256)
+
+
 # ── PIN safety ────────────────────────────────────────────────────────────────
 
 def test_verify_pin_blocked_aborts():
@@ -164,6 +193,16 @@ def test_verify_pin_wrong_reports_tries():
         verify_pin(conn, "1234")
 
 
+def test_verify_pin_unknown_probe_status_fails_closed():
+    # A card whose status probe answers something unmodeled (e.g. 67 00 on another applet
+    # generation) must abort WITHOUT sending the PIN: the retry counter is unknown, so a real
+    # VERIFY could silently spend the last try.
+    conn = FakeConn(pin_status=(0x67, 0x00))
+    with pytest.raises(RuntimeError, match="status probe"):
+        verify_pin(conn, "1234")
+    assert conn.log == [[0x00, 0x20, 0x00, 0x11]]        # only the probe; no PIN ever transmitted
+
+
 # ── certificate + pyHanko adapter ───────────────────────────────────────────────
 
 def test_read_signing_certificate(monkeypatch):
@@ -172,6 +211,23 @@ def test_read_signing_certificate(monkeypatch):
     got = native_card.read_signing_certificate(FakeConn())
     assert got.serial_number == 0x1A
     assert got.subject == cert.subject
+
+
+@pytest.mark.parametrize("padding", [b"\x00" * 16, b"\xff" * 16])
+def test_read_signing_certificate_tolerates_ef_padding(monkeypatch, padding):
+    # read_file returns the EF's full allocated size (FCI tag 81); a personalization that pads
+    # B001 past the DER must not break parsing (load_der rejects any trailing byte).
+    cert = _make_cert()
+    padded = cert.public_bytes(Encoding.DER) + padding
+    monkeypatch.setattr(native_card, "read_file", lambda conn, fid: list(padded))
+    got = native_card.read_signing_certificate(FakeConn())
+    assert got.serial_number == 0x1A
+
+
+def test_read_signing_certificate_rejects_non_der_content(monkeypatch):
+    monkeypatch.setattr(native_card, "read_file", lambda conn, fid: list(b"\x00garbage"))
+    with pytest.raises(RuntimeError, match="DER SEQUENCE"):
+        native_card.read_signing_certificate(FakeConn())
 
 
 def test_native_signer_sign_and_dry_run():
@@ -191,6 +247,14 @@ def test_native_signer_rejects_unknown_digest():
     signer = native_card.make_native_signer(FakeConn(), _make_cert())
     with pytest.raises(RuntimeError, match="unsupported digest"):
         asyncio.run(signer.async_sign_raw(b"x", "md5"))
+
+
+def test_native_signer_rejects_truncated_signature():
+    # The adapter passes the modulus size as expected_len, so a short card response never
+    # reaches pyHanko as a "signature".
+    signer = native_card.make_native_signer(FakeConn(signature=_SIG[:100]), _make_cert())
+    with pytest.raises(RuntimeError, match="expected 256"):
+        asyncio.run(signer.async_sign_raw(b"x", "sha256"))
 
 
 # ── CLI dispatch: --native must not touch PKCS#11 ───────────────────────────────
@@ -227,3 +291,31 @@ def test_cli_native_routes_to_native_backend(monkeypatch, tmp_path):
     assert recorded == {"pin": "1234", "signed": True}
     assert "Reader:" in r.output                          # native identity block, not "Token:"
     assert "disconnect" in conn.log                       # connection closed on exit
+
+
+def test_cli_native_rejects_expired_certificate(monkeypatch, tmp_path):
+    # Same validity guard the PKCS#11 path gets from select_certificate: an expired card
+    # certificate aborts the native session BEFORE the PIN is ever requested.
+    import datetime
+    from typer.testing import CliRunner
+    from firmauy import cli
+    from firmauy.cli import app
+
+    conn = FakeConn()
+    expired = _make_cert(not_after=datetime.datetime(2021, 1, 1))
+
+    monkeypatch.setattr(cli, "open_reader", lambda reader=None: conn)
+    monkeypatch.setattr(cli, "select_applet", lambda c: None)
+    monkeypatch.setattr(native_card, "read_signing_certificate", lambda c: expired)
+
+    def _no_pin(*a, **k):
+        raise AssertionError("the PIN must not be requested for an expired certificate")
+    monkeypatch.setattr(cli, "get_pin", _no_pin)
+
+    src = tmp_path / "data.bin"
+    src.write_bytes(b"payload")
+    r = CliRunner().invoke(app, ["sign-any", str(src), str(tmp_path / "data.bin.p7s"), "--native"])
+
+    assert r.exit_code != 0
+    assert "expired" in r.output
+    assert "disconnect" in conn.log                       # connection still closed on the way out

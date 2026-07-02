@@ -42,6 +42,7 @@ from firmauy.card_reader import (
 )
 from firmauy.cert_utils import (
     cert_not_after,
+    cert_not_before,
     get_common_name,
     name_fields,
     normalize_issuer_name,
@@ -62,6 +63,8 @@ from firmauy.constants import (
 )
 from firmauy.pin import PinSource, get_pin
 from firmauy.pkcs11_utils import (
+    cert_is_expired,
+    cert_not_yet_valid,
     find_token,
     get_private_key,
     iter_cert_objects,
@@ -308,6 +311,16 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
     try:
         select_applet(conn)
         cert = native_card.read_signing_certificate(conn)
+        # Same validity guard the PKCS#11 path gets from select_certificate: never sign with an
+        # expired / not-yet-valid certificate, and fail before prompting for the PIN.
+        if cert_is_expired(cert) or cert_not_yet_valid(cert):
+            if cert_is_expired(cert):
+                reason = f"expired (valid until {cert_not_after(cert)})"
+            else:
+                reason = f"not yet valid (valid from {cert_not_before(cert)})"
+            raise RuntimeError(
+                f"The card's signing certificate is {reason}: {get_common_name(cert.subject)}"
+            )
         signer_name = get_common_name(cert.subject)
         issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
         cert_serial = format(cert.serial_number, "X")
@@ -320,11 +333,14 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
             signer_name=signer_name, issuer_name=issuer_name, key_id=None,
             cert_serial=cert_serial, tsa_url=tsa_url, quiet=quiet, source_caption="Reader",
         )
-        signer = native_card.make_native_signer(conn, cert)
+        # The pyHanko signer is built lazily through the factory (honoring _SigningContext's
+        # contract: an XML-only sign never constructs it, nor loads the bundled trust anchors).
+        sig_len = (cert.public_key().key_size + 7) // 8   # expected RSA signature size (256)
         yield _SigningContext(
             cert=cert, signer_name=signer_name, issuer_name=issuer_name, cert_serial=cert_serial,
-            pyhanko_signer_factory=lambda: signer,
-            raw_signer_factory=lambda: (lambda data: native_card.sign_message(conn, data)),
+            pyhanko_signer_factory=lambda: native_card.make_native_signer(conn, cert),
+            raw_signer_factory=lambda: (
+                lambda data: native_card.sign_message(conn, data, expected_len=sig_len)),
         )
     finally:
         try:

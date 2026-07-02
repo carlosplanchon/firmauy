@@ -51,12 +51,29 @@ def _ok(sw1: int, sw2: int, what: str) -> None:
 
 # ── Certificate ─────────────────────────────────────────────────────────────────
 
+def _der_total_length(buf: bytes, what: str) -> int:
+    """Total length (header + content) of the DER SEQUENCE at the start of ``buf``."""
+    if len(buf) < 2 or buf[0] != 0x30:
+        raise RuntimeError(f"{what} does not start with a DER SEQUENCE.")
+    first = buf[1]
+    if first < 0x80:                    # short form
+        return 2 + first
+    n = first & 0x7F                    # long form: n length bytes follow
+    if n == 0 or len(buf) < 2 + n:
+        raise RuntimeError(f"Malformed DER length in {what}.")
+    return 2 + n + int.from_bytes(buf[2:2 + n], "big")
+
+
 def read_signing_certificate(conn) -> "_crypto_x509.Certificate":
     """Read the public signing certificate (EF B001) and return it as a cryptography x509 object.
 
     No PIN required; the certificate is public. Returned as a ``cryptography`` certificate so the CLI
     display helpers and the XAdES signer can consume it unchanged."""
     der = bytes(read_file(conn, CERT_FID))
+    # read_file returns the EF's full allocated size (FCI tag 81), which may exceed the certificate
+    # (zero/FF padding after the DER on some personalizations); trim to the outer SEQUENCE length,
+    # since load_der_x509_certificate rejects any trailing byte (ParseError: ExtraData).
+    der = der[:_der_total_length(der, "EF B001")]
     return _crypto_x509.load_der_x509_certificate(der)
 
 
@@ -78,15 +95,24 @@ def verify_pin(conn, pin: str) -> None:
     """VERIFY the User PIN, refusing to spend the last try.
 
     Probes the retry counter first (a status-only VERIFY consumes no try): aborts if the PIN is
-    already blocked or has <=1 try left, and returns early if the session is already verified. A wrong
-    VERIFY consumes a retry and can lock the card, so the empty-PIN guard lives in ``pin.get_pin`` and
-    this only runs once we already have a candidate PIN."""
+    already blocked or has <=1 try left, and returns early if the session is already verified. The
+    guard fails closed: an unrecognized probe answer (a card generation that does not support the
+    status-only VERIFY) also aborts, since sending the PIN without knowing the remaining tries could
+    spend the last one. A wrong VERIFY consumes a retry and can lock the card, so the empty-PIN guard
+    lives in ``pin.get_pin`` and this only runs once we already have a candidate PIN."""
     status = _pin_status(conn)
     if status == "blocked":
         raise RuntimeError("The PIN is blocked (too many incorrect attempts).")
     if status == "verified":
         return
-    if isinstance(status, int) and status <= 1:
+    if not isinstance(status, int):
+        # Unmodeled status word from the probe: refuse to send the PIN blind rather than risk
+        # consuming the last try on a card whose retry counter we could not read.
+        raise RuntimeError(
+            f"Unexpected card response {status} to the PIN status probe; refusing to send the PIN "
+            "with an unknown retry counter. This card may not support native mode."
+        )
+    if status <= 1:
         raise RuntimeError(
             f"Only {status} PIN try left; aborting for safety. Unblock the cédula before retrying."
         )
@@ -107,13 +133,15 @@ def verify_pin(conn, pin: str) -> None:
 
 # ── Signing ──────────────────────────────────────────────────────────────────
 
-def sign_message(conn, message: bytes, algo: int = 0x42) -> bytes:
+def sign_message(conn, message: bytes, algo: int = 0x42, *,
+                 expected_len: int | None = None) -> bytes:
     """Sign ``message`` with the cédula's RSA-2048 key and return the raw signature bytes.
 
     Assumes the PIN has already been verified (see ``verify_pin``). Runs MSE:SET DST -> PSO:HASH ->
     PSO:CDS. ``message`` is the raw to-be-signed data (CMS SignedAttributes / XAdES SignedInfo / PDF
     byte range); it is hashed here in Python and only the final digest is sent to the card, which
-    builds the DigestInfo and signs it."""
+    builds the DigestInfo and signs it. ``expected_len`` (the key's modulus size in bytes) makes a
+    truncated card response a hard error instead of an invalid signature embedded in the output."""
     hash_name = _ALGO_HASH.get(algo)
     if hash_name is None:
         raise RuntimeError(f"unsupported on-card algorithm 0x{algo:02X}")
@@ -133,12 +161,24 @@ def sign_message(conn, message: bytes, algo: int = 0x42) -> bytes:
     if sw1 != 0x61:
         _ok(sw1, sw2, "PSO:HASH")
 
-    # PSO:CDS -- compute the RSA signature; fetch it via GET RESPONSE when more data is announced.
+    # PSO:CDS -- compute the RSA signature; collect it via GET RESPONSE while more data is announced
+    # (a T=0 reader may deliver the 256-byte signature in chained 61 xx chunks).
     resp, sw1, sw2 = conn.transmit([0x00, 0x2A, 0x9E, 0x9A, 0x00])
-    if sw1 == 0x61:
+    sig = list(resp)
+    while sw1 == 0x61:
         resp, sw1, sw2 = conn.transmit([0x00, 0xC0, 0x00, 0x00, sw2])
+        sig.extend(resp)
+        if not resp and sw1 == 0x61:
+            # No bytes but still "more data available": bail out rather than loop forever.
+            raise RuntimeError("PSO:CDS GET RESPONSE returned no data despite more being announced.")
     _ok(sw1, sw2, "PSO:CDS")
-    return bytes(resp)
+    if not sig:
+        raise RuntimeError("PSO:CDS returned an empty signature despite success status.")
+    if expected_len is not None and len(sig) != expected_len:
+        raise RuntimeError(
+            f"PSO:CDS returned {len(sig)} signature bytes, expected {expected_len}."
+        )
+    return bytes(sig)
 
 
 # ── pyHanko Signer ─────────────────────────────────────────────────────────────
@@ -199,4 +239,4 @@ class NativeCardSigner(_Signer):
         algo = ALGO_ID.get(digest_algorithm)
         if algo is None:
             raise RuntimeError(f"unsupported digest {digest_algorithm!r}")
-        return sign_message(self._conn, data, algo)
+        return sign_message(self._conn, data, algo, expected_len=self._sig_len)

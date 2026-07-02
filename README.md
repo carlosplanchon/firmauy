@@ -6,6 +6,7 @@
 
 Sign and verify PDF, XML and any file with your Uruguayan national ID card over PKCS#11. Open-standard signatures (PAdES, XAdES, CAdES) that verify in any compliant validator, with the whole trust chain checked locally against the Uruguayan national root. Your documents stay on your machine.
 
+[![CI](https://github.com/carlosplanchon/firmauy/actions/workflows/ci.yml/badge.svg)](https://github.com/carlosplanchon/firmauy/actions/workflows/ci.yml)
 [![PyPI version](https://img.shields.io/pypi/v/firmauy.svg)](https://pypi.org/project/firmauy/)
 [![Python versions](https://img.shields.io/pypi/pyversions/firmauy.svg)](https://pypi.org/project/firmauy/)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)

@@ -72,6 +72,36 @@ If the output path is omitted, the signed file is saved as:
 <input>_firmado.pdf
 ```
 
+### Hybrid cross-reference PDFs
+
+Some PDFs (often those exported by design tools such as InDesign) use **hybrid cross-reference
+sections** — a classic xref table *and* an xref stream, for compatibility with pre-1.5 readers.
+firmauy refuses to sign these by default:
+
+```text
+Error: <file> uses hybrid cross-reference sections, which cannot be signed in strict mode ...
+```
+
+The reason is a conservative one: an incremental signature over a hybrid file could leave its two
+xref structures out of sync, so a very old reader might see different content than a modern one.
+
+Two ways forward:
+
+**1. Normalize first (recommended).** `qpdf` rewrites the cross-reference structure (dropping the
+hybrid form) without re-encoding the content, so the signed result is a plain, strictly
+verifiable PDF:
+
+```bash
+qpdf input.pdf normalized.pdf
+firmauy sign-pdf normalized.pdf output_signed.pdf
+```
+
+**2. Sign as-is with `--allow-hybrid-xref`.** Available on `sign-pdf`, `sign-pdf-batch`, `sign` and
+`sign-batch`, this opens the PDF non-strict and signs it (with a warning). The resulting signature is
+**valid** — it is accepted by the official AGESIC validator, and `firmauy verify` validates it too
+(it re-opens hybrid files in relaxed mode and flags that it did so). The only caveat is the
+old-reader equivalence note above, so use it when normalizing the source is not an option.
+
 ## Signing sanity check (`--verify`) vs full verification
 
 These are two different things, and the distinction matters:
@@ -188,6 +218,11 @@ Notes and caveats:
 - **Everything else is identical:** PIN sources (`--pin-source`), TSA timestamping (`--tsa-url`),
   `--verify`, `--quiet`, the PDF appearance/position options and the batch flags all work unchanged.
   The identity block prints `Reader:` instead of `Token:`.
+- **Card generation.** Verified on the v4 (contact) cédula. The 2022 v5 (dual-interface / NFC)
+  generation has not been tested with `--native`. If such a card does not respond as expected,
+  firmauy **aborts safely before sending the PIN** (it never risks spending the card's last retry),
+  so the worst case is that native mode refuses to run — not a blocked cédula. Use the PKCS#11
+  backend (without `--native`) as the fallback.
 - **Experimental.** This backend is not officially certified. In practice its signatures verify VALID
   locally and are accepted by the official AGESIC validator, but use it at your own risk. The
   card-level protocol it implements is documented in the

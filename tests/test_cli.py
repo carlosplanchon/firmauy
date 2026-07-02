@@ -1173,3 +1173,61 @@ def test_signing_session_warns_on_backend_mismatched_options(monkeypatch, capsys
                               pin_fd=None, tsa_url=None, quiet=True):
         pass
     assert "--reader only applies to --native" in capsys.readouterr().err
+
+
+class _FakeHybridWriter:
+    """Stands in for IncrementalPdfFileWriter: reports a hybrid-xref PDF and records the strict
+    flag it was opened with, so _sign_one_pdf's hybrid-xref branch can be tested without a
+    hand-crafted hybrid PDF."""
+    last_strict = None
+
+    def __init__(self, stream, strict=True):
+        type(self).last_strict = strict
+        import types as _t
+        self.prev = _t.SimpleNamespace(xrefs=_t.SimpleNamespace(hybrid_xrefs_present=True))
+
+
+_SIGN_ONE_PDF_ARGS = dict(
+    pkcs11_signer=object(), signer_name="S", issuer_name="I", cert_serial="1A",
+    timestamper=None, meta=object(), page=-1, x1=0, y1=0, x2=1, y2=1, timezone="UTC",
+    field_name="Sig1", force=False, overwrite=False,
+)
+
+
+def test_sign_one_pdf_rejects_hybrid_xref_by_default(monkeypatch, tmp_path):
+    # A hybrid cross-reference PDF is refused before any signing work, with a message that names
+    # both the qpdf workaround and the opt-in flag.
+    from firmauy import cli
+    monkeypatch.setattr(cli, "IncrementalPdfFileWriter", _FakeHybridWriter)
+    src = tmp_path / "in.pdf"
+    src.write_bytes(b"%PDF-1.7\n")
+
+    with pytest.raises(RuntimeError) as ei:
+        cli._sign_one_pdf(input_pdf=src, output_pdf=tmp_path / "out.pdf", **_SIGN_ONE_PDF_ARGS)
+    msg = str(ei.value)
+    assert "hybrid cross-reference" in msg
+    assert "qpdf" in msg and "--allow-hybrid-xref" in msg
+    assert _FakeHybridWriter.last_strict is True                 # default opens strict
+
+
+def test_sign_one_pdf_allows_hybrid_xref_with_flag(monkeypatch, tmp_path, capsys):
+    # --allow-hybrid-xref opens the PDF non-strict and warns instead of refusing; we stop right
+    # after the guard (before the real pyHanko machinery) via a sentinel from enumerate_sig_fields.
+    from firmauy import cli
+    monkeypatch.setattr(cli, "IncrementalPdfFileWriter", _FakeHybridWriter)
+
+    class _Sentinel(Exception):
+        pass
+
+    def _stop(_writer):
+        raise _Sentinel
+    monkeypatch.setattr(cli.fields, "enumerate_sig_fields", _stop)
+
+    src = tmp_path / "in.pdf"
+    src.write_bytes(b"%PDF-1.7\n")
+    with pytest.raises(_Sentinel):                               # got past the guard, no RuntimeError
+        cli._sign_one_pdf(input_pdf=src, output_pdf=tmp_path / "out.pdf",
+                          allow_hybrid_xref=True, **_SIGN_ONE_PDF_ARGS)
+    assert _FakeHybridWriter.last_strict is False                # opened non-strict to allow signing
+    err = capsys.readouterr().err
+    assert "hybrid cross-reference sections" in err and "--allow-hybrid-xref" in err

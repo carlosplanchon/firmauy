@@ -86,11 +86,25 @@ def verify_pdf(
     results = []
     with open(Path(pdf_path), "rb") as f:
         reader = PdfFileReader(f)
+        hybrid = reader.xrefs.hybrid_xrefs_present
+        if hybrid:
+            # pyHanko refuses to validate hybrid cross-reference PDFs in strict mode, but such a
+            # signature can still be valid (these are accepted by the official AGESIC validator, and
+            # firmauy can produce them with `sign --allow-hybrid-xref`). Re-open non-strict so we can
+            # actually check it; normal (non-hybrid) PDFs stay strict.
+            f.seek(0)
+            reader = PdfFileReader(f, strict=False)
         sigs = list(reader.embedded_signatures)
         if not sigs:
             return [VerifyResult("INVALID", [Check("signature present", False, "no signatures in PDF")])]
         with muted_path_building_warnings():
             for emb in sigs:
                 status = validate_pdf_signature(emb, vc)
-                results.append(_map_status(status, bool(trust_roots)))
+                result = _map_status(status, bool(trust_roots))
+                if hybrid:
+                    result.checks.append(Check(
+                        "hybrid cross-reference sections: validated in relaxed mode", True,
+                        "pyHanko rejects these in strict mode; the signature itself is unaffected",
+                    ))
+                results.append(result)
     return results

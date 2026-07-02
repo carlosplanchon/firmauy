@@ -179,6 +179,7 @@ ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
 NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label are then ignored; --cert-id is rejected, as the card has a single signing certificate). Experimental; not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
 ReaderOpt = Annotated[Optional[str], typer.Option("--reader", help="PC/SC reader name (as shown by list-readers) for --native. Auto-detected when exactly one reader is present.")]
+AllowHybridXrefOpt = Annotated[bool, typer.Option("--allow-hybrid-xref", help="Sign PDFs that use hybrid cross-reference sections (opens the PDF non-strict). Off by default: such PDFs are rejected because the incremental signature may not be equivalent for all readers -- normalize with `qpdf in.pdf out.pdf` instead. Use at your own risk.")]
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +588,7 @@ def _sign_one_pdf(
     image_path: Optional[Path] = None,
     image_mode: ImageMode = ImageMode.background,
     image_opacity: float = DEFAULT_IMAGE_OPACITY,
+    allow_hybrid_xref: bool = False,
 ) -> None:
     """Sign a single PDF. Raises on any error."""
     if input_pdf.resolve() == output_pdf.resolve():
@@ -603,7 +605,24 @@ def _sign_one_pdf(
     ensure_output_parent(output_pdf)
 
     with input_pdf.open("rb") as inf:
-        writer = IncrementalPdfFileWriter(inf)
+        # Hybrid cross-reference PDFs (a classic xref table + an xref stream, common in files
+        # exported by design tools) can't be incrementally signed in strict mode: pyHanko refuses
+        # because the two xref structures could desync and the signature would not be equivalent
+        # for all readers. --allow-hybrid-xref opens the PDF non-strict to sign it anyway.
+        writer = IncrementalPdfFileWriter(inf, strict=not allow_hybrid_xref)
+        if writer.prev.xrefs.hybrid_xrefs_present:
+            if not allow_hybrid_xref:
+                raise RuntimeError(
+                    f"{input_pdf.name} uses hybrid cross-reference sections, which cannot be "
+                    "signed in strict mode (the incremental signature may not be equivalent for "
+                    "all PDF readers). Normalize it first with `qpdf in.pdf out.pdf` and sign the "
+                    "result, or pass --allow-hybrid-xref to sign it as-is (at your own risk)."
+                )
+            typer.secho(
+                f"Warning: {input_pdf.name} has hybrid cross-reference sections; signing due to "
+                "--allow-hybrid-xref. The signature may not be equivalent for older PDF readers.",
+                fg=typer.colors.YELLOW, err=True,
+            )
 
         existing_fields = list(fields.enumerate_sig_fields(writer))
         matching = [(name, val) for name, val, _ in existing_fields if name == field_name]
@@ -886,6 +905,7 @@ def sign_pdf(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     field_name: FieldNameOpt = "Sig1",
+    allow_hybrid_xref: AllowHybridXrefOpt = False,
     page: PageOpt = -1,
     x1: X1Opt = DEFAULT_X1,
     y1: Y1Opt = DEFAULT_Y1,
@@ -991,6 +1011,7 @@ def sign_pdf(
                 image_path=image,
                 image_mode=image_mode,
                 image_opacity=image_opacity,
+                allow_hybrid_xref=allow_hybrid_xref,
             )
 
         if verify:
@@ -1030,6 +1051,7 @@ def sign_pdf_batch(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     field_name: FieldNameOpt = "Sig1",
+    allow_hybrid_xref: AllowHybridXrefOpt = False,
     page: PageOpt = -1,
     x1: X1Opt = DEFAULT_X1,
     y1: Y1Opt = DEFAULT_Y1,
@@ -1161,6 +1183,7 @@ def sign_pdf_batch(
                         image_path=image,
                         image_mode=image_mode,
                         image_opacity=image_opacity,
+                        allow_hybrid_xref=allow_hybrid_xref,
                     )
                     if verify:
                         _verify_after_pdf(output_pdf)
@@ -1758,6 +1781,7 @@ def sign_cmd(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     field_name: FieldNameOpt = "Sig1",
+    allow_hybrid_xref: AllowHybridXrefOpt = False,
     page: PageOpt = -1,
     x1: X1Opt = DEFAULT_X1,
     y1: Y1Opt = DEFAULT_Y1,
@@ -1841,6 +1865,7 @@ def sign_cmd(
                     timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                     timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                     image_path=image, image_mode=image_mode, image_opacity=image_opacity,
+                    allow_hybrid_xref=allow_hybrid_xref,
                 )
             elif kind == "xml":
                 _sign_one_xml(
@@ -1902,6 +1927,7 @@ def sign_batch(
     pin_env_var: PinEnvVarOpt = None,
     pin_fd: PinFdOpt = None,
     field_name: FieldNameOpt = "Sig1",
+    allow_hybrid_xref: AllowHybridXrefOpt = False,
     page: PageOpt = -1,
     x1: X1Opt = DEFAULT_X1,
     y1: Y1Opt = DEFAULT_Y1,
@@ -2017,6 +2043,7 @@ def sign_batch(
                             timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
                             timezone=timezone, field_name=field_name, force=force, overwrite=overwrite,
                             image_path=image, image_mode=image_mode, image_opacity=image_opacity,
+                            allow_hybrid_xref=allow_hybrid_xref,
                         )
                         if verify:
                             _verify_after_pdf(output)

@@ -202,6 +202,53 @@ def sample_pdf(tmp_path):
     return path
 
 
+@pytest.fixture
+def hybrid_pdf(tmp_path):
+    """A minimal hybrid cross-reference PDF: a classic xref table whose trailer points to an xref
+    stream via /XRefStm (PDF 32000-1 §7.5.8.4). Tools like qpdf don't emit these, so we build one
+    by hand (as PDFs exported by some design tools are). pyHanko reports hybrid_xrefs_present=True."""
+    import struct
+    import zlib
+
+    objs = {
+        1: b"<< /Type /Catalog /Pages 2 0 R >>",
+        2: b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        3: b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 200] >>",
+    }
+    buf = bytearray(b"%PDF-1.6\n%\xe2\xe3\xcf\xd3\n")
+    offsets = {}
+    for num in (1, 2, 3):
+        offsets[num] = len(buf)
+        buf += f"{num} 0 obj\n".encode() + objs[num] + b"\nendobj\n"
+
+    xref_stm_offset = len(buf)
+    rows = struct.pack(">BHB", 0, 0, 255)                        # obj 0: free
+    for n in (1, 2, 3):
+        rows += struct.pack(">BHB", 1, offsets[n], 0)            # uncompressed, at offset
+    rows += struct.pack(">BHB", 1, xref_stm_offset, 0)          # obj 4: the xref stream itself
+    data = zlib.compress(rows)
+    buf += (
+        b"4 0 obj\n<< /Type /XRef /Size 5 /Root 1 0 R /W [1 2 1] /Index [0 5] "
+        + f"/Filter /FlateDecode /Length {len(data)} >>\nstream\n".encode()
+        + data + b"\nendstream\nendobj\n"
+    )
+
+    table_offset = len(buf)
+    table = b"xref\n0 5\n0000000000 65535 f \n"
+    for n in (1, 2, 3):
+        table += f"{offsets[n]:010d} 00000 n \n".encode()
+    table += f"{xref_stm_offset:010d} 00000 n \n".encode()
+    table += (                                                   # /XRefStm makes the file hybrid
+        b"trailer\n<< /Size 5 /Root 1 0 R /XRefStm " + str(xref_stm_offset).encode()
+        + b" >>\nstartxref\n" + str(table_offset).encode() + b"\n%%EOF\n"
+    )
+    buf += table
+
+    path = tmp_path / "hybrid.pdf"
+    path.write_bytes(bytes(buf))
+    return path
+
+
 def _output(proc: subprocess.CompletedProcess) -> str:
     return proc.stdout + proc.stderr
 
@@ -550,3 +597,38 @@ def test_unified_sign_batch_mixed_one_session(softhsm, sample_pdf, tmp_path):
     assert (out / "a_firmado.pdf").exists()      # PDF -> PAdES
     assert (out / "b_firmado.xml").exists()      # XML -> XAdES
     assert (out / "c.bin.p7s").exists()          # other -> detached CAdES, all in ONE session
+
+
+def test_hybrid_xref_pdf_rejected_then_signed_and_verified(softhsm, hybrid_pdf, tmp_path):
+    # A hybrid cross-reference PDF is refused by default (with a message pointing at qpdf and the
+    # opt-in flag), but --allow-hybrid-xref signs it and the result verifies intact -- pyHanko's
+    # strict refusal is a policy, not a validity problem (these are accepted by the AGESIC validator).
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+    common = ["--pkcs11-lib", softhsm.module, "--token-label", "test-cedula", "--pin-source", "stdin"]
+
+    out = tmp_path / "signed.pdf"
+    rejected = softhsm.firmauy("sign-pdf", str(hybrid_pdf), str(out), *common, input_text=PIN + "\n")
+    assert rejected.returncode != 0
+    msg = _output(rejected)
+    assert "hybrid cross-reference" in msg
+    assert "qpdf" in msg and "--allow-hybrid-xref" in msg
+    assert not out.exists()                       # refused before writing any output
+
+    signed = softhsm.firmauy(
+        "sign-pdf", str(hybrid_pdf), str(out), "--allow-hybrid-xref", *common, input_text=PIN + "\n")
+    assert signed.returncode == 0, _output(signed)
+    assert "hybrid cross-reference sections" in _output(signed)   # the sign-time warning fires
+    assert out.exists()
+
+    # The produced signature verifies intact despite the hybrid xref (verify_pdf re-opens non-strict).
+    from firmauy.pdf_verify import verify_pdf
+    res = verify_pdf(out, trust_roots=None)[-1]
+    passed = {c.name for c in res.checks if c.ok}
+    assert "signature intact (covered bytes unmodified)" in passed
+    assert "signature cryptographically valid" in passed
+    assert any("hybrid cross-reference" in c.name for c in res.checks)   # relaxed-mode note present

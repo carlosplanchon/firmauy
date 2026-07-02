@@ -19,17 +19,11 @@ from datetime import datetime, timezone
 from typing import IO, Optional, Union
 
 from asn1crypto import cms as asn1cms
-from asn1crypto import x509 as asn1x509
-from cryptography.hazmat.primitives.serialization import Encoding
 from pyhanko.sign.validation import async_validate_detached_cms
 from pyhanko_certvalidator import ValidationContext
 
-from firmauy.cert_utils import name_fields
+from firmauy.cert_utils import name_fields, to_asn1_certs
 from firmauy.verify_common import Check, VerifyResult, muted_path_building_warnings
-
-
-def _to_asn1(certs):
-    return [asn1x509.Certificate.load(c.public_bytes(Encoding.DER)) for c in (certs or [])]
 
 
 def _load_signed_data(p7s_bytes: bytes) -> asn1cms.SignedData:
@@ -95,8 +89,8 @@ def verify_cms(
     vc = None
     if trust_roots:
         vc = ValidationContext(
-            trust_roots=_to_asn1(trust_roots),
-            other_certs=_to_asn1(intermediates),
+            trust_roots=to_asn1_certs(trust_roots),
+            other_certs=to_asn1_certs(intermediates),
             allow_fetching=check_revocation,
             revocation_mode="hard-fail" if check_revocation else "soft-fail",
             moment=at,

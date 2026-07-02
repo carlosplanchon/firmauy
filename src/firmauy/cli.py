@@ -246,6 +246,30 @@ class _SigningContext:
         return self._raw_signer
 
 
+def _cert_display_fields(cert) -> tuple:
+    """The (signer_name, issuer_name, cert_serial) shown in the identity block, derived the same
+    way by both signing backends."""
+    return (
+        get_common_name(cert.subject),
+        normalize_issuer_name(get_common_name(cert.issuer)),
+        format(cert.serial_number, "X"),
+    )
+
+
+@contextmanager
+def _card_connection(reader_name=None):
+    """Open a PC/SC card connection and always disconnect on exit (best-effort), shared by the
+    native signing session and fetch-identity / fetch-photo."""
+    conn = open_reader(reader_name)
+    try:
+        yield conn
+    finally:
+        try:
+            conn.disconnect()
+        except Exception:
+            pass
+
+
 @contextmanager
 def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin_source, pin_env_var,
                      pin_fd, tsa_url, quiet):
@@ -288,9 +312,7 @@ def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin_source, pin
     final_pin = get_pin(pin_source, pin_env_var, pin_fd)
     with token.open(user_pin=final_pin) as session:
         key_id, cert = select_certificate(session, cert_id)
-        signer_name = get_common_name(cert.subject)
-        issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
-        cert_serial = format(cert.serial_number, "X")
+        signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
         token_label_display = (getattr(token, "label", "") or "").strip() or "<no label>"
         _print_signing_info(
             token_label_display=token_label_display, signer_name=signer_name,
@@ -312,8 +334,7 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
     exit. Do not run while a PKCS#11 sign session is open on the same card: both go through pcscd and
     will conflict."""
     from firmauy import native_card
-    conn = open_reader(reader)
-    try:
+    with _card_connection(reader) as conn:
         select_applet(conn)
         cert = native_card.read_signing_certificate(conn)
         # Same validity guard the PKCS#11 path gets from select_certificate: never sign with an
@@ -326,9 +347,7 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
             raise RuntimeError(
                 f"The card's signing certificate is {reason}: {get_common_name(cert.subject)}"
             )
-        signer_name = get_common_name(cert.subject)
-        issuer_name = normalize_issuer_name(get_common_name(cert.issuer))
-        cert_serial = format(cert.serial_number, "X")
+        signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
         # Prompt/read the PIN only after the (PIN-free) cert read succeeds, so a reader/card problem
         # surfaces before we ask for a PIN. verify_pin refuses to spend the card's last retry.
         final_pin = get_pin(pin_source, pin_env_var, pin_fd)
@@ -349,11 +368,6 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
             raw_signer_factory=lambda: (
                 lambda data: native_card.sign_message(conn, data, expected_len=sig_len)),
         )
-    finally:
-        try:
-            conn.disconnect()
-        except Exception:
-            pass
 
 
 # Header names whose value is usually a secret. If passed literally via --tsa-header the value
@@ -2768,14 +2782,8 @@ def fetch_identity_cmd(
     """
     try:
         json_output = json_output or json_pretty
-        conn = open_reader(reader_name)
-        try:
+        with _card_connection(reader_name) as conn:
             card = read_card(conn)
-        finally:
-            try:
-                conn.disconnect()
-            except Exception:
-                pass
         if json_output:
             payload = {
                 "schema_version": _JSON_SCHEMA_VERSION,
@@ -2858,14 +2866,8 @@ def fetch_photo_cmd(
             raise RuntimeError(
                 f"Output file already exists: {output}\nUse --overwrite to overwrite it."
             )
-        conn = open_reader(reader_name)
-        try:
+        with _card_connection(reader_name) as conn:
             photo = read_photo(conn)
-        finally:
-            try:
-                conn.disconnect()
-            except Exception:
-                pass
         if json_output:
             payload = {
                 "schema_version": _JSON_SCHEMA_VERSION,

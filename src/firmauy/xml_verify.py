@@ -24,10 +24,9 @@ from typing import Optional
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.primitives.serialization import Encoding
 from lxml import etree
 
-from firmauy.cert_utils import name_fields
+from firmauy.cert_utils import name_fields, to_asn1_cert, to_asn1_certs
 from firmauy.verify_common import Check, VerifyResult, muted_path_building_warnings
 from firmauy.xml_sign import (
     SIGNED_PROPS_TYPE,
@@ -61,22 +60,18 @@ def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -
     """
     import asyncio
 
-    from asn1crypto import x509 as asn1x509
     from pyhanko_certvalidator import CertificateValidator, ValidationContext
 
-    def to_asn1(c):
-        return asn1x509.Certificate.load(c.public_bytes(Encoding.DER))
-
     vc = ValidationContext(
-        trust_roots=[to_asn1(r) for r in roots],
-        other_certs=[to_asn1(c) for c in intermediates],
+        trust_roots=to_asn1_certs(roots),
+        other_certs=to_asn1_certs(intermediates),
         allow_fetching=check_revocation,
         revocation_mode="hard-fail" if check_revocation else "soft-fail",
         moment=at_time,
     )
     validator = CertificateValidator(
-        to_asn1(leaf),
-        intermediate_certs=[to_asn1(c) for c in intermediates],
+        to_asn1_cert(leaf),
+        intermediate_certs=to_asn1_certs(intermediates),
         validation_context=vc,
     )
     try:
@@ -146,21 +141,17 @@ def _validate_tsa_token(signed_data, sv, gen_time, tsa_trust_roots, tsa_other_ce
     ``(Check, trusted_time)``; ``trusted_time`` is the genTime only when fully trusted."""
     import asyncio
 
-    from asn1crypto import x509 as asn1x509
     from pyhanko.sign.validation.generic_cms import validate_tst_signed_data
     from pyhanko.sign.validation.status import TimestampSignatureStatus
     from pyhanko_certvalidator import ValidationContext
-
-    def to_asn1(c):
-        return asn1x509.Certificate.load(c.public_bytes(Encoding.DER))
 
     def imprint(hash_algo: str) -> bytes:
         return hashlib.new(hash_algo, _c14n(sv)).digest()
 
     try:
         vc = ValidationContext(
-            trust_roots=[to_asn1(c) for c in tsa_trust_roots],
-            other_certs=[to_asn1(c) for c in (tsa_other_certs or [])],
+            trust_roots=to_asn1_certs(tsa_trust_roots),
+            other_certs=to_asn1_certs(tsa_other_certs),
             allow_fetching=False,
             revocation_mode="soft-fail",
             moment=gen_time,   # validate the TSA certificate at the time it claims to have signed

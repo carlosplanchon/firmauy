@@ -3,7 +3,19 @@
 
 from asn1crypto import x509 as asn1x509
 from cryptography import x509
+from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import NameOID
+
+
+def to_asn1_cert(cert: x509.Certificate) -> asn1x509.Certificate:
+    """Bridge a ``cryptography`` certificate to ``asn1crypto`` (the type pyhanko and
+    pyhanko-certvalidator consume)."""
+    return asn1x509.Certificate.load(cert.public_bytes(Encoding.DER))
+
+
+def to_asn1_certs(certs) -> list:
+    """List form of ``to_asn1_cert``; tolerates ``None``."""
+    return [to_asn1_cert(c) for c in (certs or [])]
 
 
 def name_fields(name) -> dict:

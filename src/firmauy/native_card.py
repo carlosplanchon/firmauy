@@ -27,13 +27,12 @@ from __future__ import annotations
 
 import hashlib
 
-from asn1crypto import x509 as asn1_x509
 from cryptography import x509 as _crypto_x509
-from cryptography.hazmat.primitives.serialization import Encoding
 from pyhanko.sign.signers import Signer
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
-from firmauy.card_reader import read_file
+from firmauy.card_reader import check_sw, read_file, transmit_collect
+from firmauy.cert_utils import to_asn1_cert, to_asn1_certs
 from firmauy.national_ca import load_bundled_trust_anchors
 
 CERT_FID = 0xB001   # signing certificate EF (public, no PIN)
@@ -46,11 +45,6 @@ PIN_REF = 0x11      # User (Global) PIN reference
 ALGO_ID = {"sha256": 0x42, "sha384": 0x52, "sha512": 0x62, "sha224": 0x32}
 # On-card AlgoID -> hashlib name, to compute the digest the card expects for that algorithm.
 _ALGO_HASH = {v: k for k, v in ALGO_ID.items()}
-
-
-def _ok(sw1: int, sw2: int, what: str) -> None:
-    if (sw1, sw2) != (0x90, 0x00):
-        raise RuntimeError(f"{what} failed: {sw1:02X} {sw2:02X}")
 
 
 # ── Certificate ─────────────────────────────────────────────────────────────────
@@ -132,7 +126,7 @@ def verify_pin(conn, pin: str) -> None:
         raise RuntimeError(f"Incorrect PIN, {sw2 & 0x0F} tries left.")
     if (sw1, sw2) == (0x69, 0x83):
         raise RuntimeError("The PIN is blocked (too many incorrect attempts).")
-    _ok(sw1, sw2, "VERIFY PIN")
+    check_sw(sw1, sw2, "VERIFY PIN")
 
 
 # ── Signing ──────────────────────────────────────────────────────────────────
@@ -154,7 +148,7 @@ def sign_message(conn, message: bytes, algo: int = 0x42, *,
     # MSE:SET DST -- select the signing key (ref 0x01) and algorithm (0x42 = RSA-PKCS#1v1.5 / SHA-256).
     _, sw1, sw2 = conn.transmit(
         [0x00, 0x22, 0x41, 0xB6, 0x06, 0x80, 0x01, algo, 0x84, 0x01, KEY_REF])
-    _ok(sw1, sw2, "MSE:SET DST")
+    check_sw(sw1, sw2, "MSE:SET DST")
 
     # PSO:HASH -- hand the card the pre-computed digest under tag 0x90. It always fits one short APDU
     # (32 bytes for SHA-256). The card answers 61 20 (echoing the on-card digest); the command is
@@ -163,19 +157,12 @@ def sign_message(conn, message: bytes, algo: int = 0x42, *,
     do = [0x90, len(digest)] + list(digest)
     _, sw1, sw2 = conn.transmit([0x00, 0x2A, 0x90, 0xA0, len(do)] + do)
     if sw1 != 0x61:
-        _ok(sw1, sw2, "PSO:HASH")
+        check_sw(sw1, sw2, "PSO:HASH")
 
-    # PSO:CDS -- compute the RSA signature; collect it via GET RESPONSE while more data is announced
-    # (a T=0 reader may deliver the 256-byte signature in chained 61 xx chunks).
-    resp, sw1, sw2 = conn.transmit([0x00, 0x2A, 0x9E, 0x9A, 0x00])
-    sig = list(resp)
-    while sw1 == 0x61:
-        resp, sw1, sw2 = conn.transmit([0x00, 0xC0, 0x00, 0x00, sw2])
-        sig.extend(resp)
-        if not resp and sw1 == 0x61:
-            # No bytes but still "more data available": bail out rather than loop forever.
-            raise RuntimeError("PSO:CDS GET RESPONSE returned no data despite more being announced.")
-    _ok(sw1, sw2, "PSO:CDS")
+    # PSO:CDS -- compute the RSA signature; transmit_collect gathers the chained 61 xx GET RESPONSE
+    # continuations (a T=0 reader may deliver the 256-byte signature in chunks).
+    sig, sw1, sw2 = transmit_collect(conn, [0x00, 0x2A, 0x9E, 0x9A, 0x00])
+    check_sw(sw1, sw2, "PSO:CDS")
     if not sig:
         raise RuntimeError("PSO:CDS returned an empty signature despite success status.")
     if expected_len is not None and len(sig) != expected_len:
@@ -194,8 +181,7 @@ def _bundled_cert_registry():
     reads only the leaf (EF B001), so the chain is supplied from the package's pinned trust anchors so
     CAdES/PAdES signatures embed it."""
     roots, intermediates = load_bundled_trust_anchors()
-    certs = [asn1_x509.Certificate.load(c.public_bytes(Encoding.DER))
-             for c in (*roots, *intermediates)]
+    certs = to_asn1_certs((*roots, *intermediates))
     return SimpleCertificateStore.from_certs(certs) if certs else None
 
 
@@ -215,7 +201,7 @@ class NativeCardSigner(Signer):
 
     def __init__(self, conn, cert: "_crypto_x509.Certificate"):
         self._conn = conn
-        asn1_cert = asn1_x509.Certificate.load(cert.public_bytes(Encoding.DER))
+        asn1_cert = to_asn1_cert(cert)
         self._sig_len = (cert.public_key().key_size + 7) // 8   # 256 for RSA-2048
         super().__init__(
             signing_cert=asn1_cert,

@@ -39,11 +39,32 @@ BIO_FIELDS = {
 
 # ── APDU helpers ──────────────────────────────────────────────────────────────
 
+def check_sw(sw1: int, sw2: int, what: str) -> None:
+    """Raise unless the status word is 90 00, naming the command that failed."""
+    if (sw1, sw2) != (0x90, 0x00):
+        raise RuntimeError(f"{what} failed: {sw1:02X} {sw2:02X}")
+
+
+def transmit_collect(conn, apdu) -> tuple:
+    """Transmit an APDU and collect chained 61 xx continuations via GET RESPONSE.
+
+    Returns ``(data, sw1, sw2)`` with all response chunks concatenated: loops while the card
+    announces more data, as a T=0 stack may deliver a long response in chunks."""
+    data, sw1, sw2 = conn.transmit(list(apdu))
+    buf = list(data)
+    while sw1 == 0x61:
+        data, sw1, sw2 = conn.transmit([0x00, 0xC0, 0x00, 0x00, sw2])
+        buf.extend(data)
+        if not data and sw1 == 0x61:
+            # No bytes but still "more data available": bail out rather than loop forever.
+            raise RuntimeError("GET RESPONSE returned no data despite more being announced.")
+    return buf, sw1, sw2
+
+
 def select_applet(conn) -> None:
     apdu = [0x00, 0xA4, 0x04, 0x00, len(AIS_AID)] + AIS_AID
     _, sw1, sw2 = conn.transmit(apdu)
-    if (sw1, sw2) != (0x90, 0x00):
-        raise RuntimeError(f"SELECT AID failed: {sw1:02X} {sw2:02X}")
+    check_sw(sw1, sw2, "SELECT AID")
 
 
 def _fci_file_size(fci: list) -> int:
@@ -55,11 +76,8 @@ def _fci_file_size(fci: list) -> int:
 
 def select_file(conn, fid: int) -> list:
     apdu = [0x00, 0xA4, 0x00, 0x00, 0x02, fid >> 8, fid & 0xFF, 0x00]
-    data, sw1, sw2 = conn.transmit(apdu)
-    if sw1 == 0x61:
-        data, sw1, sw2 = conn.transmit([0x00, 0xC0, 0x00, 0x00, sw2])
-    if (sw1, sw2) != (0x90, 0x00):
-        raise RuntimeError(f"SELECT {fid:04X} failed: {sw1:02X} {sw2:02X}")
+    data, sw1, sw2 = transmit_collect(conn, apdu)
+    check_sw(sw1, sw2, f"SELECT {fid:04X}")
     return data
 
 
@@ -71,8 +89,7 @@ def read_file(conn, fid: int) -> list:
         chunk = min(size - offset, 0xF8)
         p1, p2 = (offset >> 8) & 0x7F, offset & 0xFF
         data, sw1, sw2 = conn.transmit([0x00, 0xB0, p1, p2, chunk])
-        if (sw1, sw2) != (0x90, 0x00):
-            raise RuntimeError(f"READ BINARY @{offset} failed: {sw1:02X} {sw2:02X}")
+        check_sw(sw1, sw2, f"READ BINARY @{offset}")
         if not data:
             # Success status but no bytes: offset would not advance -> infinite loop. Bail out
             # instead of hanging on a misbehaving reader/card.

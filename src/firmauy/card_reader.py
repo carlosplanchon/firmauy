@@ -39,6 +39,13 @@ BIO_FIELDS = {
 
 # ── APDU helpers ──────────────────────────────────────────────────────────────
 
+class CardFileAbsent(RuntimeError):
+    """SELECT FILE reported the file does not exist on this card (SW 6A 82).
+
+    Distinct from other failures so callers can treat a genuinely optional file as absent while
+    still propagating transport errors and unexpected status words."""
+
+
 def check_sw(sw1: int, sw2: int, what: str) -> None:
     """Raise unless the status word is 90 00, naming the command that failed."""
     if (sw1, sw2) != (0x90, 0x00):
@@ -63,20 +70,44 @@ def transmit_collect(conn, apdu) -> tuple:
 
 def select_applet(conn) -> None:
     apdu = [0x00, 0xA4, 0x04, 0x00, len(AIS_AID)] + AIS_AID
-    _, sw1, sw2 = conn.transmit(apdu)
+    # transmit_collect, not raw transmit: a T=0 stack may answer SELECT with 61 xx (FCI available
+    # via GET RESPONSE), which is success. Mirrors select_file.
+    _, sw1, sw2 = transmit_collect(conn, apdu)
     check_sw(sw1, sw2, "SELECT AID")
 
 
 def _fci_file_size(fci: list) -> int:
-    for i in range(len(fci) - 3):
-        if fci[i] == 0x81 and fci[i + 1] == 0x02:
-            return (fci[i + 2] << 8) | fci[i + 3]
-    raise RuntimeError(f"Tag 81 not found in FCI: {bytes(fci).hex()}")
+    """File size from the SELECT response: sub-TLV 80 or 81 inside the FCI template (6F).
+
+    The sub-TLVs are walked structurally rather than byte-scanned, so an 81 02 pair occurring
+    inside another sub-TLV's value cannot be mistaken for the size tag."""
+    b = bytes(fci)
+    body = b
+    if b[:1] == b"\x6f":
+        decoded = ber_length(b, 1)
+        if decoded is not None:
+            length, start = decoded
+            body = b[start:start + length]
+    i = 0
+    while i + 2 <= len(body):
+        tag = body[i]
+        decoded = ber_length(body, i + 1)
+        if decoded is None:
+            break
+        length, start = decoded
+        if start + length > len(body):
+            break   # declared length runs past the buffer: malformed FCI
+        if tag in (0x80, 0x81) and length >= 1:
+            return int.from_bytes(body[start:start + length], "big")
+        i = start + length
+    raise RuntimeError(f"File size tag (80/81) not found in FCI: {b.hex()}")
 
 
 def select_file(conn, fid: int) -> list:
     apdu = [0x00, 0xA4, 0x00, 0x00, 0x02, fid >> 8, fid & 0xFF, 0x00]
     data, sw1, sw2 = transmit_collect(conn, apdu)
+    if (sw1, sw2) == (0x6A, 0x82):
+        raise CardFileAbsent(f"File {fid:04X} not found on the card.")
     check_sw(sw1, sw2, f"SELECT {fid:04X}")
     return data
 
@@ -86,9 +117,14 @@ def read_file(conn, fid: int) -> list:
     size = _fci_file_size(fci)
     buf, offset = [], 0
     while offset < size:
+        if offset > 0x7FFF:
+            # Plain READ BINARY (INS B0, P1 bit 8 = 0) encodes a 15-bit offset. Masking the high
+            # bits would silently wrap and re-read from 0, corrupting the result.
+            raise RuntimeError(
+                f"File {fid:04X} extends past offset 7FFF, beyond plain READ BINARY addressing."
+            )
         chunk = min(size - offset, 0xF8)
-        p1, p2 = (offset >> 8) & 0x7F, offset & 0xFF
-        data, sw1, sw2 = conn.transmit([0x00, 0xB0, p1, p2, chunk])
+        data, sw1, sw2 = conn.transmit([0x00, 0xB0, offset >> 8, offset & 0xFF, chunk])
         check_sw(sw1, sw2, f"READ BINARY @{offset}")
         if not data:
             # Success status but no bytes: offset would not advance -> infinite loop. Bail out
@@ -100,6 +136,41 @@ def read_file(conn, fid: int) -> list:
 
 
 # ── Parsers ───────────────────────────────────────────────────────────────────
+
+def ber_length(b: bytes, i: int) -> Optional[tuple]:
+    """Decode the BER length starting at ``b[i]``. Returns ``(length, value_start)`` or None.
+
+    Handles the short form and the long form (81..87). Returns None for the indefinite form (80)
+    and for a truncated length field, so callers can reject malformed data. Shared with
+    ``native_card`` (certificate EF trimming) so there is a single length decoder."""
+    if i >= len(b):
+        return None
+    first = b[i]
+    if first < 0x80:
+        return first, i + 1
+    n = first & 0x7F
+    if n == 0 or len(b) < i + 1 + n:
+        return None
+    return int.from_bytes(b[i + 1:i + 1 + n], "big"), i + 1 + n
+
+
+def _tlv_value(data, tag0: int, tag1: int) -> Optional[bytes]:
+    """Value of the two-byte-tag BER-TLV at the start of ``data``, or None.
+
+    Returns None when the tag does not match, the length field is malformed, or the declared
+    length runs past the buffer, so callers can tell a well-formed TLV from truncated or foreign
+    data and fall back accordingly."""
+    b = bytes(data)
+    if len(b) < 3 or b[0] != tag0 or b[1] != tag1:
+        return None
+    decoded = ber_length(b, 2)
+    if decoded is None:
+        return None
+    length, start = decoded
+    if start + length > len(b):
+        return None   # declared length runs past the buffer: truncated data
+    return b[start:start + length]
+
 
 def parse_bio(data: list) -> dict:
     """Parse 1F-prefixed TLV biographical data (file 7002)."""
@@ -122,22 +193,16 @@ def parse_bio(data: list) -> dict:
 
 def parse_doc_number(data: list) -> Optional[str]:
     """Extract document number from file 7001 (tag 5F01)."""
-    if len(data) >= 4 and data[0] == 0x5F and data[1] == 0x01:
-        length = data[2]
-        if 3 + length > len(data):
-            return None   # declared length runs past the buffer: unparseable, not a truncated value
-        return bytes(data[3: 3 + length]).decode("ascii", errors="replace").strip()
-    return None
+    value = _tlv_value(data, 0x5F, 0x01)
+    if value is None:
+        return None   # missing tag or declared length past the buffer: unparseable
+    return value.decode("ascii", errors="replace").strip() or None
 
 
 def parse_mrz(data: list) -> Optional[list]:
     """Return MRZ lines from file 700B: TD1 (3×30) or TD3 (2×44)."""
-    if len(data) >= 3 and data[0] == 0x7F and data[1] == 0x01:
-        length = data[2]
-        raw_bytes = data[3: 3 + length]
-    else:
-        raw_bytes = data
-    raw = bytes(raw_bytes).decode("ascii", errors="replace")
+    value = _tlv_value(data, 0x7F, 0x01)
+    raw = (value if value is not None else bytes(data)).decode("ascii", errors="replace")
     n = len(raw)
     if n >= 90:
         return [raw[0:30], raw[30:60], raw[60:90]]
@@ -149,25 +214,21 @@ def parse_mrz(data: list) -> Optional[list]:
 def parse_photo(data: list) -> Optional[bytes]:
     """Extract the JPEG image from file 7004.
 
-    The file is BER-TLV: tag 3F01, a length (short form, or long form 81/82/83), then the JPEG
-    value. If the wrapper differs, fall back to locating the JPEG SOI marker (FF D8 FF) directly.
+    The file is BER-TLV: tag 3F01, a length, then the JPEG value. If the wrapper differs or is
+    truncated, fall back to locating the JPEG by its SOI marker (FF D8 FF), trimmed at the EOI
+    marker (FF D9) so the EF's trailing allocation padding does not leak into the returned bytes
+    (and from there into the reported size and SHA-256).
     Returns the JPEG bytes, or None if no JPEG is present."""
-    b = bytes(data)
-    if b[:2] == b"\x3f\x01" and len(b) > 2:
-        first, i, length = b[2], 3, None
-        if first < 0x80:
-            length = first
-        elif first in (0x81, 0x82, 0x83):
-            nbytes = first & 0x0F
-            length = int.from_bytes(b[3:3 + nbytes], "big")
-            i = 3 + nbytes
-        if length is not None:
-            value = b[i:i + length]
-            if value[:3] == b"\xff\xd8\xff":
-                return value
+    value = _tlv_value(data, 0x3F, 0x01)
+    if value is not None and value[:3] == b"\xff\xd8\xff":
+        return value
     # Fallback: an unexpected wrapper -- locate the JPEG by its start-of-image marker.
+    b = bytes(data)
     j = b.find(b"\xff\xd8\xff")
-    return b[j:] if j != -1 else None
+    if j == -1:
+        return None
+    end = b.find(b"\xff\xd9", j)
+    return b[j:end + 2] if end != -1 else b[j:]
 
 
 def _jpeg_dimensions(jpeg: bytes) -> Optional[tuple]:
@@ -201,18 +262,22 @@ def _jpeg_dimensions(jpeg: bytes) -> Optional[tuple]:
 # ── High-level read ───────────────────────────────────────────────────────────
 
 def read_card(conn) -> dict:
-    """Read all available data from the card. Returns {"bio", "doc_num", "mrz"}."""
+    """Read all available data from the card. Returns {"bio", "doc_num", "mrz"}.
+
+    Files 7001 and 700B are optional: only their genuine absence (SW 6A 82 on SELECT) degrades the
+    field to None. Any other failure (transport error, unexpected status word mid-read) propagates,
+    so a partial result is never silently presented as a card that lacks those files."""
     select_applet(conn)
     bio = parse_bio(read_file(conn, 0x7002))
     doc_num = None
     try:
         doc_num = parse_doc_number(read_file(conn, 0x7001))
-    except RuntimeError:
+    except CardFileAbsent:
         pass
     mrz = None
     try:
         mrz = parse_mrz(read_file(conn, 0x700B))
-    except RuntimeError:
+    except CardFileAbsent:
         pass
     return {"bio": bio, "doc_num": doc_num, "mrz": mrz}
 
@@ -242,7 +307,15 @@ def list_readers() -> list:
             "PC/SC reader support could not be loaded. Install the smart-card stack and start "
             "pcscd (Arch: sudo pacman -S pcsclite ccid; sudo systemctl enable --now pcscd)."
         ) from exc
-    return list(_readers())
+    try:
+        return list(_readers())
+    except Exception as exc:
+        # pyscard raises its own exception types (EstablishContextException etc.) when the PC/SC
+        # daemon is unreachable. Surface the actionable fix, not a bare hresult code.
+        raise RuntimeError(
+            f"Could not reach the PC/SC daemon ({exc}). Is pcscd running? "
+            "(Arch: sudo systemctl enable --now pcscd)"
+        ) from exc
 
 
 def open_reader(reader_name: Optional[str] = None):
@@ -301,7 +374,8 @@ def _center(text: str) -> str:
 
 
 def _fmt_date(s: str) -> str:
-    return f"{s[0:2]}/{s[2:4]}/{s[4:8]}"
+    """DDMMYYYY -> DD/MM/YYYY. Any other length is returned as-is (malformed card value)."""
+    return f"{s[0:2]}/{s[2:4]}/{s[4:8]}" if len(s) == 8 else s
 
 
 def format_card_human(card: dict, redact: bool = False) -> str:

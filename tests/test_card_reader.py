@@ -57,6 +57,7 @@ def test_parse_doc_number():
     data = [0x5F, 0x01, 0x05] + list(b"12345")
     assert parse_doc_number(data) == "12345"
     assert parse_doc_number([0x00, 0x00]) is None
+    assert parse_doc_number([0x5F, 0x01, 0x00]) is None   # empty value: absent, not ""
 
 
 def test_parse_bio_drops_field_whose_length_runs_past_buffer():
@@ -75,8 +76,19 @@ def test_parse_mrz_td1_three_lines():
     assert parse_mrz(list(raw)) == ["A" * 30, "B" * 30, "C" * 30]
 
 
+def test_parse_mrz_wrapped_7f01():
+    raw = ("A" * 30 + "B" * 30 + "C" * 30).encode("ascii")
+    data = [0x7F, 0x01, len(raw)] + list(raw)
+    assert parse_mrz(data) == ["A" * 30, "B" * 30, "C" * 30]
+
+
 def test_fmt_date():
     assert _fmt_date("01011970") == "01/01/1970"
+
+
+def test_fmt_date_malformed_length_returned_as_is():
+    assert _fmt_date("5") == "5"                    # not "5//"
+    assert _fmt_date("010119701") == "010119701"    # 9 chars: left untouched
 
 
 # --- redaction (the regression guard) ---------------------------------------
@@ -152,7 +164,21 @@ def test_parse_photo_tlv_short_length():
 def test_parse_photo_fallback_locates_soi():
     # An unexpected wrapper: the JPEG is still recovered via its SOI marker.
     data = list(b"\x99\x88\x77" + _JPEG)
-    assert bytes(parse_photo(data)).startswith(b"\xff\xd8\xff")
+    assert parse_photo(data) == _JPEG
+
+
+def test_parse_photo_fallback_trims_ef_padding_at_eoi():
+    # Unexpected wrapper AND trailing EF allocation padding: the returned bytes must stop at the
+    # EOI marker, so fetch-photo's reported size and SHA-256 cover only the image itself.
+    data = list(b"\x99\x88" + _JPEG + b"\x00" * 32)
+    assert parse_photo(data) == _JPEG
+
+
+def test_parse_photo_declared_length_past_buffer_falls_back_to_soi():
+    # A 3F01 wrapper declaring far more bytes than present is not trusted: the SOI/EOI fallback
+    # recovers exactly the image instead of returning a silently truncated slice.
+    data = list(b"\x3f\x01\x81\xff" + _JPEG)   # claims 0xFF bytes, fewer present
+    assert parse_photo(data) == _JPEG
 
 
 def test_parse_photo_none_without_jpeg():
@@ -183,6 +209,89 @@ def test_read_photo_end_to_end_with_fake_card():
 
     card = _FakeCard(bytes(_ber_tlv(b"\x3f\x01", _JPEG)))   # file 7004 as on the card
     assert read_photo(card) == _JPEG                        # full path: applet -> file -> JPEG
+
+
+def test_fci_size_ignores_81_02_inside_another_tlv_value():
+    from firmauy.card_reader import _fci_file_size
+
+    # 6F 08 | 83 02 81 02 (a sub-TLV whose VALUE bytes spell 81 02) | 81 02 00 40 (real size 0x40).
+    # A raw byte scan would match inside the first sub-TLV and report 0x8102; the structural walk
+    # must skip it and land on the real size tag.
+    fci = [0x6F, 0x08, 0x83, 0x02, 0x81, 0x02, 0x81, 0x02, 0x00, 0x40]
+    assert _fci_file_size(fci) == 0x40
+
+
+class _ChunkedSelectCard(_FakeCard):
+    """SELECT AID answers 61 xx (FCI available via GET RESPONSE), as a T=0 stack may."""
+
+    def transmit(self, apdu):
+        if apdu[:4] == [0x00, 0xA4, 0x04, 0x00]:          # SELECT AID -> more data available
+            return [], 0x61, 0x02
+        if apdu[:2] == [0x00, 0xC0]:                       # GET RESPONSE -> the FCI
+            return [0x6F, 0x00], 0x90, 0x00
+        return super().transmit(apdu)
+
+
+def test_select_applet_chains_61xx_get_response():
+    from firmauy.card_reader import select_applet
+
+    select_applet(_ChunkedSelectCard(b""))   # must not raise "SELECT AID failed: 61 02"
+
+
+class _NoOptionalFilesCard(_FakeCard):
+    """Serves file 7002 but reports 6A 82 (file not found) for every other SELECT FILE."""
+
+    def transmit(self, apdu):
+        if apdu[:4] == [0x00, 0xA4, 0x00, 0x00] and apdu[5:7] != [0x70, 0x02]:
+            return [], 0x6A, 0x82
+        return super().transmit(apdu)
+
+
+def test_read_card_degrades_only_on_genuinely_absent_files():
+    from firmauy.card_reader import read_card
+
+    card = read_card(_NoOptionalFilesCard(bytes(_tlv(0x01, b"PEREZ"))))
+    assert card["bio"] == {0x01: "PEREZ"}
+    assert card["doc_num"] is None and card["mrz"] is None
+
+
+class _FailingOptionalCard(_FakeCard):
+    """SELECT of file 7001 fails with 69 82 (security status): a real failure, not absence."""
+
+    def transmit(self, apdu):
+        if apdu[:4] == [0x00, 0xA4, 0x00, 0x00] and apdu[5:7] == [0x70, 0x01]:
+            return [], 0x69, 0x82
+        return super().transmit(apdu)
+
+
+def test_read_card_propagates_non_absent_failures_on_optional_files():
+    # A transport-level or security failure on an optional file must surface, not be silently
+    # degraded to None as if the card simply lacked the file.
+    from firmauy.card_reader import read_card
+
+    with pytest.raises(RuntimeError, match="SELECT 7001"):
+        read_card(_FailingOptionalCard(bytes(_tlv(0x01, b"PEREZ"))))
+
+
+def test_read_file_rejects_offsets_past_15_bit_limit():
+    from firmauy.card_reader import read_file
+
+    # 33 KB declared size: plain READ BINARY cannot address past offset 7FFF, so the read must
+    # fail loudly instead of wrapping the offset and returning corrupt data.
+    with pytest.raises(RuntimeError, match="7FFF"):
+        read_file(_FakeCard(bytes(0x8100)), 0x7004)
+
+
+def test_list_readers_wraps_pcsc_daemon_failure(monkeypatch):
+    smartcard_system = pytest.importorskip("smartcard.System")
+    from firmauy.card_reader import list_readers
+
+    def boom():
+        raise Exception("Failure to establish context: 0x8010001D")
+
+    monkeypatch.setattr(smartcard_system, "readers", boom)
+    with pytest.raises(RuntimeError, match="pcscd"):
+        list_readers()
 
 
 class _StuckCard:

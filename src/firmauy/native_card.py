@@ -31,7 +31,7 @@ from cryptography import x509 as _crypto_x509
 from pyhanko.sign.signers import Signer
 from pyhanko_certvalidator.registry import SimpleCertificateStore
 
-from firmauy.card_reader import check_sw, read_file, transmit_collect
+from firmauy.card_reader import ber_length, check_sw, read_file, transmit_collect
 from firmauy.cert_utils import to_asn1_cert, to_asn1_certs
 from firmauy.national_ca import load_bundled_trust_anchors
 
@@ -53,13 +53,11 @@ def _der_total_length(buf: bytes, what: str) -> int:
     """Total length (header + content) of the DER SEQUENCE at the start of ``buf``."""
     if len(buf) < 2 or buf[0] != 0x30:
         raise RuntimeError(f"{what} does not start with a DER SEQUENCE.")
-    first = buf[1]
-    if first < 0x80:                    # short form
-        return 2 + first
-    n = first & 0x7F                    # long form: n length bytes follow
-    if n == 0 or len(buf) < 2 + n:
+    decoded = ber_length(buf, 1)        # shared short/long-form decoder from card_reader
+    if decoded is None:
         raise RuntimeError(f"Malformed DER length in {what}.")
-    return 2 + n + int.from_bytes(buf[2:2 + n], "big")
+    length, start = decoded
+    return start + length
 
 
 def read_signing_certificate(conn) -> "_crypto_x509.Certificate":

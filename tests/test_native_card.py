@@ -68,6 +68,10 @@ class FakeConn:
     def disconnect(self):
         self.log.append("disconnect")
 
+    def getReader(self):
+        # pyscard CardConnection API: the resolved reader name (shown in the identity block).
+        return "Fake Reader 00"
+
 
 def _make_cert(not_before=None, not_after=None):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
@@ -290,6 +294,8 @@ def test_cli_native_routes_to_native_backend(monkeypatch, tmp_path):
     assert r.exit_code == 0, r.output
     assert recorded == {"pin": "1234", "signed": True}
     assert "Reader:" in r.output                          # native identity block, not "Token:"
+    assert "Fake Reader 00" in r.output                   # the resolved device name, not a placeholder
+    assert "pcscd" in r.output                            # the backend pre-flight note still fires
     assert "disconnect" in conn.log                       # connection closed on exit
 
 

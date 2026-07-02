@@ -27,10 +27,14 @@ from __future__ import annotations
 
 import hashlib
 
+from asn1crypto import x509 as asn1_x509
 from cryptography import x509 as _crypto_x509
 from cryptography.hazmat.primitives.serialization import Encoding
+from pyhanko.sign.signers import Signer
+from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from firmauy.card_reader import read_file
+from firmauy.national_ca import load_bundled_trust_anchors
 
 CERT_FID = 0xB001   # signing certificate EF (public, no PIN)
 KEY_REF = 0x01      # signing private key reference
@@ -188,11 +192,7 @@ def _bundled_cert_registry():
 
     Parity with ``PKCS11Signer``, which embeds the issuer chain it finds on the token; the native path
     reads only the leaf (EF B001), so the chain is supplied from the package's pinned trust anchors so
-    CAdES/PAdES signatures embed it. Imported lazily to keep this module importable without pyHanko."""
-    from asn1crypto import x509 as asn1_x509
-    from pyhanko_certvalidator.registry import SimpleCertificateStore
-    from firmauy.national_ca import load_bundled_trust_anchors
-
+    CAdES/PAdES signatures embed it."""
     roots, intermediates = load_bundled_trust_anchors()
     certs = [asn1_x509.Certificate.load(c.public_bytes(Encoding.DER))
              for c in (*roots, *intermediates)]
@@ -202,17 +202,11 @@ def _bundled_cert_registry():
 def make_native_signer(conn, cert: "_crypto_x509.Certificate"):
     """Build a ``NativeCardSigner`` for an already-authenticated connection.
 
-    Deferred so ``NativeCardSigner`` (and its pyHanko base) is only imported when actually signing."""
+    The construction seam the CLI calls (and tests monkeypatch) instead of naming the class."""
     return NativeCardSigner(conn, cert)
 
 
-try:
-    from pyhanko.sign.signers import Signer as _Signer
-except Exception:   # pragma: no cover - pyHanko is a hard dep; this only guards odd import orders
-    _Signer = object
-
-
-class NativeCardSigner(_Signer):
+class NativeCardSigner(Signer):
     """pyHanko ``Signer`` that produces RSA signatures via raw APDUs on a pyscard connection.
 
     The connection must already be open, the applet selected and the PIN verified. ``async_sign_raw``
@@ -220,7 +214,6 @@ class NativeCardSigner(_Signer):
     RSA signature over them."""
 
     def __init__(self, conn, cert: "_crypto_x509.Certificate"):
-        from asn1crypto import x509 as asn1_x509
         self._conn = conn
         asn1_cert = asn1_x509.Certificate.load(cert.public_bytes(Encoding.DER))
         self._sig_len = (cert.public_key().key_size + 7) // 8   # 256 for RSA-2048

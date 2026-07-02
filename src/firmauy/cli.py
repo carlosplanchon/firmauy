@@ -253,8 +253,13 @@ def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin_so
 
     Dispatches to the native PC/SC backend (``--native``) or the PKCS#11 backend. Both select the
     signing certificate, print the identity block, and expose the same signer factories, so every
-    sign-* command (single and batch) stays backend-agnostic. Callers keep their own (fail-fast,
-    pre-PIN) validation and timestamper build."""
+    sign-* command (single and batch) stays backend-agnostic. Warns first (pre-flight, before any
+    PIN prompt) about options that don't apply to the chosen backend. Callers keep their own
+    (fail-fast, pre-PIN) validation and timestamper build."""
+    _warn_backend_options(
+        native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
+        cert_id=cert_id,
+    )
     if native:
         with _native_signing_session(
             reader=reader, pin_source=pin_source, pin_env_var=pin_env_var, pin_fd=pin_fd,
@@ -329,7 +334,9 @@ def _native_signing_session(*, reader, pin_source, pin_env_var, pin_fd, tsa_url,
         final_pin = get_pin(pin_source, pin_env_var, pin_fd)
         native_card.verify_pin(conn, final_pin)
         _print_signing_info(
-            token_label_display=str(reader) if reader else "<auto-detected>",
+            # The reader name pyscard resolved, so the identity block records the actual device
+            # even when it was auto-detected rather than passed via --reader.
+            token_label_display=conn.getReader(),
             signer_name=signer_name, issuer_name=issuer_name, key_id=None,
             cert_serial=cert_serial, tsa_url=tsa_url, quiet=quiet, source_caption="Reader",
         )
@@ -924,10 +931,6 @@ def sign_pdf(
                 err=True,
             )
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
@@ -1089,10 +1092,6 @@ def sign_pdf_batch(
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
@@ -1313,10 +1312,6 @@ def sign_xml_cmd(
             tsa_header_env=tsa_header_env,
         )
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
@@ -1419,10 +1414,6 @@ def sign_xml_batch(
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
@@ -1521,10 +1512,6 @@ def sign_any(
                 "Use --overwrite to overwrite it."
             )
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
@@ -1633,10 +1620,6 @@ def sign_any_batch(
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
@@ -1815,10 +1798,6 @@ def sign_cmd(
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
         )
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,
@@ -1984,10 +1963,6 @@ def sign_batch(
 
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        _warn_backend_options(
-            native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
-            cert_id=cert_id,
-        )
         with _signing_session(
             native=native, reader=reader,
             pkcs11_lib=pkcs11_lib, token_label=token_label, cert_id=cert_id,

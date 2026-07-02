@@ -1155,3 +1155,21 @@ def test_signing_session_yields_context_and_respects_quiet(monkeypatch, capsys):
     with cli._signing_session(**common, quiet=True) as ctx:
         assert ctx.signer_name == "SIGNER" and ctx.cert_serial == "1A"
     assert capsys.readouterr().out == ""                                # silent under --quiet
+
+
+def test_signing_session_warns_on_backend_mismatched_options(monkeypatch, capsys):
+    # The backend-option pre-flight lives inside _signing_session (shared by all 8 sign commands),
+    # so no command can forget it: --reader without --native warns on stderr, pre-PIN.
+    from firmauy import cli
+    monkeypatch.setattr(cli, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(cli, "find_token", lambda lib, label: _FakeToken())
+    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
+    monkeypatch.setattr(cli, "select_certificate", lambda session, cid: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(cli, "get_common_name", lambda name: "SIGNER")
+    monkeypatch.setattr(cli, "normalize_issuer_name", lambda s: "ISSUER")
+
+    with cli._signing_session(native=False, reader="ACS ACR39U 00 00", pkcs11_lib="lib.so",
+                              token_label=None, cert_id=None, pin_source=None, pin_env_var=None,
+                              pin_fd=None, tsa_url=None, quiet=True):
+        pass
+    assert "--reader only applies to --native" in capsys.readouterr().err

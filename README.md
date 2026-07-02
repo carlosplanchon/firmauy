@@ -78,10 +78,10 @@ The default PKCS#11 module expected by this tool is:
 
 On Arch Linux, this is provided by the `cedula-uruguay-pkcs11` AUR package.
 
-> **Optional — native mode:** every signing command also accepts `--native`, which talks to the
-> cédula directly over PC/SC (pcscd + a reader) and needs **no PKCS#11 middleware** at all. It is
-> experimental (not officially certified, though its output is accepted by the AGESIC validator); see
-> [Native signing](docs/usage.md#native-signing-no-pkcs11-middleware) and the
+> **Native mode (optional):** every signing command also accepts `--native`, which talks to the
+> cédula directly over PC/SC (pcscd and a reader) and needs **no PKCS#11 middleware** at all. It is
+> experimental and not officially certified, though its output is accepted by the AGESIC validator.
+> See [Native signing](docs/usage.md#native-signing-no-pkcs11-middleware) and the
 > [card protocol reference](docs/card-protocol.md).
 
 ## Setup on Arch Linux

@@ -37,7 +37,7 @@ firmauy sign contrato.pdf --as cades   # detached .p7s over the PDF, leaving the
 
 `sign` accepts the full option set of the per-type commands (PKCS#11, PIN sources, TSA timestamping,
 and the PDF appearance options like `--image` and the position flags). The PDF appearance and field
-options apply only when signing a PDF; on a non-PDF input they are ignored with a note. For
+options apply only when signing a PDF. On a non-PDF input they are ignored with a note. For
 fine-grained control you can still use the dedicated `sign-pdf` / `sign-xml` / `sign-any`.
 
 ## Sign a folder (batch, auto-detect)
@@ -55,7 +55,7 @@ firmauy sign-batch --input-dir docs --output-dir signed --as cades  # force a .p
 
 Outputs follow each type's convention: `<name>_firmado.pdf` / `<name>_firmado.xml` (the `--suffix` is
 configurable) and `<name>.p7s` for detached CAdES. PDF appearance options apply to the PDF files in
-the mix. Per-file errors do not stop the batch; the command exits non-zero if any file failed, and
+the mix. Per-file errors do not stop the batch. The command exits non-zero if any file failed, and
 prints a `Signed: ok/total` summary.
 
 ## Sign a single PDF
@@ -75,8 +75,8 @@ If the output path is omitted, the signed file is saved as:
 ### Hybrid cross-reference PDFs
 
 Some PDFs (often those exported by design tools such as InDesign) use **hybrid cross-reference
-sections** — a classic xref table *and* an xref stream, for compatibility with pre-1.5 readers.
-firmauy refuses to sign these by default:
+sections**, meaning a classic xref table *and* an xref stream, for compatibility with pre-1.5
+readers. firmauy refuses to sign these by default:
 
 ```text
 Error: <file> uses hybrid cross-reference sections, which cannot be signed in strict mode ...
@@ -98,7 +98,7 @@ firmauy sign-pdf normalized.pdf output_signed.pdf
 
 **2. Sign as-is with `--allow-hybrid-xref`.** Available on `sign-pdf`, `sign-pdf-batch`, `sign` and
 `sign-batch`, this opens the PDF non-strict and signs it (with a warning). The resulting signature is
-**valid** — it is accepted by the official AGESIC validator, and `firmauy verify` validates it too
+**valid**. It is accepted by the official AGESIC validator, and `firmauy verify` validates it too
 (it re-opens hybrid files in relaxed mode and flags that it did so). The only caveat is the
 old-reader equivalence note above, so use it when normalizing the source is not an option.
 
@@ -108,8 +108,8 @@ These are two different things, and the distinction matters:
 
 - **`sign-pdf --verify`** (also `sign-xml` / `sign-any` and their `*-batch` variants): an immediate
   **sanity check** of the signature just produced, right after writing it (integrity, and for PDFs
-  full-file coverage). It does **not** validate the trust chain; it catches a corrupt or malformed
-  output on the spot. If the signature is not intact the command fails (non-zero exit); in batch it
+  full-file coverage). It does **not** validate the trust chain. It catches a corrupt or malformed
+  output on the spot. If the signature is not intact the command fails (non-zero exit), and in batch it
   counts as an error for that file.
 - **`verify-pdf` / `verify-xml` / `verify-any` / `verify`**: a full **technical verification**,
   including the certificate chain to the Uruguayan national root (see below).
@@ -176,8 +176,8 @@ Choose the source by security context (most to least contained):
 
 | Source | Use for | Why |
 | --- | --- | --- |
-| `prompt` | manual use | the PIN is only typed; never on disk, argv or env |
-| `fd` | secure automation | a dedicated file descriptor you control; not in argv or env |
+| `prompt` | manual use | the PIN is only typed, never on disk, argv or env |
+| `fd` | secure automation | a dedicated file descriptor you control, not in argv or env |
 | `stdin` | controlled automation | not in argv, but a literal `echo "$PIN" \|` can leak to shell history or process lists |
 | `env` | closed/isolated environments only | last resort: environment variables are inherited by child processes, readable via `/proc/<pid>/environ` and `ps eww`, and can surface in core dumps, container inspection and CI logs |
 
@@ -187,8 +187,8 @@ Choose the source by security context (most to least contained):
 
 Every signing command (`sign`, `sign-pdf`, `sign-xml`, `sign-any` and their `*-batch` variants)
 accepts `--native`, which signs by talking to the cédula **directly over PC/SC** (raw ISO 7816-4
-APDUs) instead of through a PKCS#11 module. It needs only `pcscd` and a reader — **not** the
-`libgclib.so` middleware — and produces the same PAdES / XAdES / CAdES output.
+APDUs) instead of through a PKCS#11 module. It needs only `pcscd` and a reader, **not** the
+`libgclib.so` middleware, and produces the same PAdES / XAdES / CAdES output.
 
 ```bash
 # Same commands as always, just add --native (prompts for the PIN once, as usual)
@@ -207,13 +207,13 @@ firmauy sign-pdf contrato.pdf out.pdf --native --reader "ACS ACR39U 00 00"
 Notes and caveats:
 
 - **No PKCS#11 options.** In native mode `--pkcs11-lib` and `--token-label` do not apply (there is
-  no PKCS#11 module or token); the tool warns if you pass them. `--cert-id` is a **hard error** with
+  no PKCS#11 module or token), and the tool warns if you pass them. `--cert-id` is a **hard error** with
   `--native`: it pins the signing identity by PKCS#11 object ID, a guarantee the native backend
   cannot honor (the card has a single signing certificate), so automation that relies on it fails
   loudly instead of silently signing with whatever card is inserted. `--reader` only applies with
   `--native`.
 - **One card at a time.** Do not run `--native` while a PKCS#11 session (another `sign-*` invocation
-  using the middleware) is active on the same card — both go through `pcscd` and will conflict. This
+  using the middleware) is active on the same card. Both go through `pcscd` and will conflict. This
   is the same caveat as `fetch-identity` / `fetch-photo`.
 - **Everything else is identical:** PIN sources (`--pin-source`), TSA timestamping (`--tsa-url`),
   `--verify`, `--quiet`, the PDF appearance/position options and the batch flags all work unchanged.
@@ -221,7 +221,7 @@ Notes and caveats:
 - **Card generation.** Verified on the v4 (contact) cédula. The 2022 v5 (dual-interface / NFC)
   generation has not been tested with `--native`. If such a card does not respond as expected,
   firmauy **aborts safely before sending the PIN** (it never risks spending the card's last retry),
-  so the worst case is that native mode refuses to run — not a blocked cédula. Use the PKCS#11
+  so the worst case is that native mode refuses to run rather than a blocked cédula. Use the PKCS#11
   backend (without `--native`) as the fallback.
 - **Experimental.** This backend is not officially certified. In practice its signatures verify VALID
   locally and are accepted by the official AGESIC validator, but use it at your own risk. The
@@ -256,7 +256,7 @@ firmauy sign-any contract.zip --tsa-url https://your-tsa/endpoint \
 
 TSA timestamping is **optional** and **not required** for the standard Uruguayan cédula flow (the official tools sign at the BES level, without a timestamp). It is **bring-your-own**: any external RFC 3161 TSA works. Uruguay has no free public TSA, and the accredited *qualified* timestamping services (e.g. Antel/TuID, regulated by the UCE) are gated behind subscriber credentials. So a *qualified* Uruguayan timestamp requires access you arrange separately, while any public RFC 3161 TSA still gives a technical timestamp. A timestamp adds trusted-time evidence and involves an external network request to the TSA.
 
-> Any public RFC 3161 TSA works here for a **technical** timestamp; a *qualified* timestamp requires credentials from an accredited provider (which is what `--tsa-user` / `--tsa-header` / `--tsa-header-env` are for). Client-certificate (mTLS) TSAs are **not** supported.
+> Any public RFC 3161 TSA works here for a **technical** timestamp. A *qualified* timestamp requires credentials from an accredited provider (which is what `--tsa-user` / `--tsa-header` / `--tsa-header-env` are for). Client-certificate (mTLS) TSAs are **not** supported.
 
 ## Sign batch
 
@@ -317,14 +317,14 @@ echo "1234" | firmauy sign-xml input.xml output_signed.xml --pin-source stdin
 
 Signature profile produced:
 
-- **Format:** XAdES-BES (or XAdES-T with `--tsa-url`), enveloped; the `<ds:Signature>` is appended
+- **Format:** XAdES-BES (or XAdES-T with `--tsa-url`), enveloped. The `<ds:Signature>` is appended
   as the last child of the document root, with a single reference over the whole document (`URI=""`).
 - **Canonicalization:** inclusive C14N 1.0 (`REC-xml-c14n-20010315`).
 - **Algorithms:** RSA-SHA256 signature, SHA-256 digests.
 - **Signed properties:** signing time, signing-certificate digest and data-object format.
 
 ⚠️ This is the XAdES-**BES** level (no trusted timestamp). The produced signature is
-cryptographically valid and conforms to the XAdES standard; legal and regulatory validity
+cryptographically valid and conforms to the XAdES standard. Legal and regulatory validity
 depends on your use case and applicable rules.
 
 ## Sign multiple XML documents (batch)
@@ -352,7 +352,7 @@ firmauy sign-xml-batch --input-dir ~/docs --output-dir ~/signed \
 echo "1234" | firmauy sign-xml-batch --input-dir ~/docs --output-dir ~/signed --pin-source stdin
 ```
 
-Output files are named `<original-name>_firmado.xml` by default; change it with `--suffix`. The
+Output files are named `<original-name>_firmado.xml` by default. Change it with `--suffix`. The
 output directory is created automatically. All the `sign-xml` options (token, certificate and
 PIN selection, `--timezone`, `--overwrite`) also apply.
 
@@ -383,7 +383,7 @@ echo "1234" | firmauy sign-any contract.zip --pin-source stdin
 
 Signature profile produced:
 
-- **Format:** CAdES-BES, detached (RFC 5652 CMS / PKCS#7); the original bytes are not embedded.
+- **Format:** CAdES-BES, detached (RFC 5652 CMS / PKCS#7). The original bytes are not embedded.
 - **Algorithms:** RSA-SHA256 signature, SHA-256 message digest.
 - **Signed attributes:** content type, message digest and `signing-certificate-v2` (the CMS
   counterpart of the XAdES SigningCertificate).
@@ -393,7 +393,7 @@ contract.zip.p7s -content contract.zip`, or with `firmauy verify-any` (see below
 
 ⚠️ This is the CAdES-**BES** level (no trusted timestamp). Passing `--tsa-url` embeds a trusted
 timestamp (CAdES-T), at the cost of contacting that external TSA. The produced signature is
-cryptographically valid and conforms to the CMS/CAdES standard; legal and regulatory validity
+cryptographically valid and conforms to the CMS/CAdES standard. Legal and regulatory validity
 depends on your use case and applicable rules.
 
 ## Sign multiple files (batch)
@@ -470,12 +470,12 @@ Trust anchors are resolved in order: `--ca-file`, then the cache (`firmauy fetch
 bundled certificates. With `--no-trust`, verification reports signature integrity only (level 1).
 
 **Trusted timestamps and long-term validation (XAdES-T).** By default a XAdES-T timestamp is only
-checked to *bind* to the signature; its TSA is not validated, so the `genTime` is shown as asserted,
+checked to *bind* to the signature. Its TSA is not validated, so the `genTime` is shown as asserted,
 not verified. Pass `--tsa-ca <tsa-bundle.pem>` (the timestamping authority's certificate) to
 validate the RFC 3161 token: on success the timestamp counts as **trusted time** and the signing
 certificate is evaluated **at that time** instead of now, so a signature stays VALID even after the
 signer's certificate later expires. There is no national TSA list to bundle, so this is
-bring-your-own; PDF/CMS timestamps are validated through `--ca-file` instead. See
+bring-your-own. PDF/CMS timestamps are validated through `--ca-file` instead. See
 [docs/trust-anchors.md](trust-anchors.md).
 
 It reports a per-check breakdown and an overall indication:
@@ -488,9 +488,9 @@ It reports a per-check breakdown and an overall indication:
 Exit codes: `0` VALID, `1` INVALID, `2` INDETERMINATE.
 
 **JSON output.** Pass `--json` to any verify command (`verify-xml` / `verify-pdf` / `verify-any` /
-`verify`) to get a single JSON object on stdout (stable `schema_version`; exit codes unchanged), suitable
-for CI or integration. The `signatures` array has one entry per signature (PDFs can have several);
-`signer` and `issuer` are structured:
+`verify`) to get a single JSON object on stdout (stable `schema_version`, exit codes unchanged), suitable
+for CI or integration. The `signatures` array has one entry per signature (PDFs can have several).
+The `signer` and `issuer` fields are structured:
 
 ```json
 {"schema_version": 1, "redacted": false, "indication": "VALID", "signatures": [
@@ -595,7 +595,7 @@ firmauy verify-pdf signed.pdf --check-revocation
 For each signature it checks integrity (intact and cryptographically valid), **coverage**
 (whether the signature covers the whole file or content was added afterwards), and the
 certificate chain to the national root. Trust anchors work exactly like `verify-xml`
-(bundled by default; override with `--ca-file`).
+(bundled by default, override with `--ca-file`).
 
 Same indication model (VALID / INDETERMINATE / INVALID) and exit codes as `verify-xml`. When a
 PDF has multiple signatures, the overall indication is the worst one.
@@ -628,7 +628,7 @@ firmauy verify-any contract.zip --check-revocation
 
 It checks integrity (the signed bytes hash to the embedded digest and the signature is
 cryptographically valid) and the certificate chain to the national root. Trust anchors work
-exactly like `verify-xml` (bundled by default; override with `--ca-file`). A detached CMS
+exactly like `verify-xml` (bundled by default, override with `--ca-file`). A detached CMS
 signature has no PDF-style coverage notion: it signs exactly the bytes it is verified against.
 
 Same indication model (VALID / INDETERMINATE / INVALID) and exit codes as `verify-xml`.
@@ -647,7 +647,7 @@ CRL/OCSP), anchored to the Uruguayan national root.
 - It is a focused implementation: it does not cover every XAdES / PAdES profile or policy feature
   (for example signature policies, or the archival AdES levels -LT / -LTA with embedded revocation
   and archive timestamps), so verdicts may differ from other validators on edge cases. (A trusted
-  timestamp can still be validated with `--tsa-ca`; see the XML verification section.)
+  timestamp can still be validated with `--tsa-ca`. See the XML verification section.)
 
 A `VALID` result is a technical assessment, not a statement of legal validity.
 
@@ -682,7 +682,7 @@ expects the national root, which is bundled).
 
 For automation, `--json` (or `--json-pretty`) emits the list as structured JSON (`schema_version` 1,
 with a top-level `redacted` flag), handy to pick a certificate programmatically (its `id` feeds
-`--cert-id`). With `--pem` each entry also gets a `pem` field; with `--redact` the holder's personal
+`--cert-id`). With `--pem` each entry also gets a `pem` field, and with `--redact` the holder's personal
 data (subject common name, document number, certificate serial and PEM) is hidden for sharing,
 keeping the issuer:
 
@@ -794,7 +794,7 @@ Fields absent on a specific card (e.g. no second lastname) are omitted from the 
 
 ## Read the cardholder's photo
 
-`firmauy fetch-photo` saves the cardholder's photo (a JPEG, AIS file `7004`) to a file. Like the biographical data, this data is accessible from the card without PIN authentication, but it is still **personal data**. By default it writes a file; pass `-` as the output to stream the raw JPEG to **stdout** instead, so you can pipe or redirect it. To avoid dumping binary to the screen, streaming to an **interactive terminal is refused** (redirect or pipe it).
+`firmauy fetch-photo` saves the cardholder's photo (a JPEG, AIS file `7004`) to a file. Like the biographical data, this data is accessible from the card without PIN authentication, but it is still **personal data**. By default it writes a file. Pass `-` as the output to stream the raw JPEG to **stdout** instead, so you can pipe or redirect it. To avoid dumping binary to the screen, streaming to an **interactive terminal is refused** (redirect or pipe it).
 
 ```bash
 firmauy fetch-photo                      # saves to cedula_foto.jpg

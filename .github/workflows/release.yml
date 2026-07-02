@@ -1,0 +1,33 @@
+name: Release
+
+# Publish to PyPI when a version tag is pushed, e.g. `git tag v1.2.0 && git push origin v1.2.0`.
+# Tag commits that are already green on main.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Least privilege by default. The publish job opts into id-token below.
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Bind to a GitHub Environment named "pypi". Add a required reviewer on it so a tag push
+    # cannot publish without manual approval, and configure the matching trusted publisher on PyPI.
+    environment: pypi
+    permissions:
+      id-token: write   # required for PyPI trusted publishing (OIDC), no stored token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Build sdist and wheel
+        run: uv build
+      # In GitHub Actions with id-token write, uv publishes via trusted publishing (OIDC).
+      # It fetches a short-lived, single-use token from PyPI, so nothing is stored anywhere.
+      - name: Publish to PyPI
+        run: uv publish --trusted-publishing always

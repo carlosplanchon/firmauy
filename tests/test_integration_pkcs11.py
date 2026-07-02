@@ -584,7 +584,8 @@ def test_unified_sign_as_cades_forces_detached_over_pdf(softhsm, sample_pdf, tmp
 
 def test_unified_sign_batch_mixed_one_session(softhsm, sample_pdf, tmp_path):
     _provision(softhsm, tmp_path)
-    src = tmp_path / "mixed"; src.mkdir()
+    src = tmp_path / "mixed"
+    src.mkdir()
     (src / "a.pdf").write_bytes(sample_pdf.read_bytes())
     (src / "b.xml").write_text("<root/>")
     (src / "c.bin").write_bytes(b"\x00\x01\x02 arbitrary bytes")

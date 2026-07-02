@@ -1076,7 +1076,8 @@ def test_sign_warns_pdf_only_option_on_non_pdf(monkeypatch, tmp_path):
 
 def test_sign_batch_mixed_folder_one_session(monkeypatch, tmp_path):
     calls = _patch_signing(monkeypatch)
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
     (src / "b.xml").write_bytes(b"<r/>")
     (src / "c.zip").write_bytes(b"PKbin")
@@ -1095,7 +1096,8 @@ def test_sign_batch_detects_output_collision(monkeypatch, tmp_path):
     # Two same-stem files of different extensions both detected as PDF would map to the same output
     # (a_firmado.pdf). The batch must refuse up front, before signing anything (F1).
     calls = _patch_signing(monkeypatch)
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
     (src / "a.txt").write_bytes(b"%PDF-1.7\n")      # different ext, same stem, also detected pdf
     out = tmp_path / "out"
@@ -1110,7 +1112,8 @@ def test_sign_batch_detects_output_collision(monkeypatch, tmp_path):
 def test_sign_batch_no_false_collision_for_distinct_outputs(monkeypatch, tmp_path):
     # Same stem but different kinds (pdf vs cades) produce distinct outputs and must NOT be flagged.
     calls = _patch_signing(monkeypatch)
-    src = tmp_path / "src"; src.mkdir()
+    src = tmp_path / "src"
+    src.mkdir()
     (src / "a.pdf").write_bytes(b"%PDF-1.7\n")       # -> a_firmado.pdf
     (src / "a.bin").write_bytes(b"\x00\x01rawbytes") # -> a.bin.p7s
     out = tmp_path / "out"

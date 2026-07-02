@@ -4,7 +4,7 @@ import datetime
 
 import pytest
 from cryptography import x509
-from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
@@ -15,7 +15,6 @@ def _build_cert(
     not_valid_after: datetime.datetime,
 ) -> x509.Certificate:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    now = datetime.datetime.now(datetime.timezone.utc)
     return (
         x509.CertificateBuilder()
         .subject_name(x509.Name(subject_attrs))

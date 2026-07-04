@@ -19,12 +19,11 @@ is rejected regardless of how it got here.
 
 - **Root (`acrn.pem`)**: published by AGESIC/UCE at `https://www.uce.gub.uy/acrn/acrn.cer`
   (still reachable at the time of writing).
-- **Intermediate (`mica.pem`)**: originally published by the Ministerio del Interior at
-  `https://ca.minterior.gub.uy/certificados/MICA.cer`. That server has been **decommissioned**
-  (returns HTTP 501), and AGESIC's accredited-providers page still points at the dead URL, so the
-  bundled copy was obtained from the public Certificate Transparency log
-  (`https://crt.sh/?d=29172099`) and confirmed byte-identical to a copy that validates a real
-  cédula chain. The two certificates are byte-for-byte identical to those fingerprints.
+- **Intermediate (`mica.pem`)**: published by the Ministerio del Interior at
+  `https://ca.minterior.gub.uy/certificados/MICA.cer`. The bundled copy was obtained from the
+  public Certificate Transparency log (`https://crt.sh/?d=29172099`) and confirmed byte-identical
+  to a copy that validates a real cédula chain, so the source is interchangeable under the
+  fingerprint pin. The two certificates are byte-for-byte identical to those fingerprints.
 
 To refresh or override these at runtime, use `firmauy fetch-cas` (re-downloads, with a crt.sh
 fallback), `firmauy fetch-cas --from-file <pem>`, or `verify-* --ca-file <pem>`.

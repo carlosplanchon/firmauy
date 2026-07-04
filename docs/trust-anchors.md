@@ -25,13 +25,13 @@ intentionally **not** pinned, the whole point being to trust a set you chose.)
 | AC Raíz Nacional de Uruguay (AGESIC) | `https://www.uce.gub.uy/acrn/acrn.cer` |
 | AC Ministerio del Interior (intermediate) | `https://ca.minterior.gub.uy/certificados/MICA.cer` (official), then `https://crt.sh/?d=29172099` (fallback) |
 
-> **Note on the intermediate source.** The Ministerio del Interior CA repository
-> (`ca.minterior.gub.uy`) has been decommissioned and now returns `HTTP 501` for every
-> request, and AGESIC's trust-list page still points at that dead URL. `fetch-cas`
-> therefore falls back to the **byte-identical** copy in the public Certificate
-> Transparency log (crt.sh), retrying transient errors. This is safe regardless of the
-> source: the bytes are accepted only if they match the pinned fingerprint below *and*
-> are signed by the pinned root. If the official server is restored, it is used first.
+> **Note on the intermediate source.** `fetch-cas` tries the official Ministerio del Interior
+> repository first, then falls back to the **byte-identical** copy in the public Certificate
+> Transparency log (crt.sh). Whatever the source, the bytes are accepted only if they match the
+> pinned fingerprint below *and* are signed by the pinned root, so the origin never matters and the
+> fallback needs no trust of its own. When last checked (2026-07-03) the official `MICA.cer` URL
+> returned `HTTP 200` and crt.sh was timing out, which is exactly the case the fingerprint pin plus
+> fallback are meant to cover.
 
 ## `fetch-cas` (optional)
 
@@ -80,11 +80,12 @@ Revocation checking is **off by default** (offline). With `--check-revocation`, 
 fetches revocation data and fails the chain (`hard-fail`) if the certificate is revoked or that
 data cannot be obtained.
 
-For **cédula** signatures, `--check-revocation` currently **cannot succeed**: the leaf
-certificate's CRL distribution point is on the Ministerio del Interior server
-(`ca.minterior.gub.uy`), which has been decommissioned and returns `HTTP 501`. Since revocation
-is `hard-fail`, unreachable revocation data fails the chain. Use the default
-(no `--check-revocation`) until the CRL endpoint is restored.
+For **cédula** signatures this needs the Ministerio del Interior CRL endpoint
+(`ca.minterior.gub.uy/crls/`) and the national root's CRL (`acrn.crl` on AGESIC/UCE). When last
+checked (2026-07-03) both returned `HTTP 200` (the cédula CRL is a ~13 MB file), so the chain's
+revocation data was reachable. Revocation is `hard-fail`, so every CRL in the chain must be reachable
+at check time or the chain fails, and this has not been re-confirmed end-to-end against a live cédula
+signature. The default (no `--check-revocation`) stays fully offline.
 
 ## Validity over time
 
@@ -104,9 +105,8 @@ validation), so a signature stays VALID even after the signer's certificate late
 
 There is no national list of trusted timestamping authorities to bundle (unlike the national CA),
 so `--tsa-ca` is bring-your-own: supply the CA of whichever TSA you used. Embedding revocation data
-at signing time (the AdES `-LT` / `-LTA` levels, for full archival validation) is out of scope and,
-for the cédula, currently impossible anyway since the Ministerio del Interior CRL endpoint is
-decommissioned.
+at signing time (the AdES `-LT` / `-LTA` levels, for full archival validation) is out of scope: it is
+not implemented, independent of whether the CRL endpoints are reachable.
 
 The bundled national CA certificates expire (2031) and can be rotated by the issuer; re-run
 `firmauy fetch-cas` to refresh from the network, or use `--ca-file`.

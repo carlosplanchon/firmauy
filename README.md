@@ -44,7 +44,9 @@ See [Commands](#commands) for the full list, with every command's options behind
 
 The full AdES triad (PAdES / XAdES / CAdES), signed locally with the cédula and verifiable with
 standard validators; local verification anchors the chain to the Uruguayan national root. Each
-command has a batch variant (`sign-pdf-batch`, `sign-xml-batch`, `sign-any-batch`).
+command has a batch variant (`sign-pdf-batch`, `sign-xml-batch`, `sign-any-batch`). The default PDF
+(PAdES) signature has a visible appearance modeled on real documents signed with the Uruguayan ID
+card.
 
 Timestamping is **optional and bring-your-own**: it works with any external RFC 3161 TSA via
 `--tsa-url`, but it is **not** part of the standard cédula flow, and Uruguay has no free public TSA
@@ -71,13 +73,9 @@ Python **3.10 or newer**.
 
 ### PKCS#11 middleware
 
-The default PKCS#11 module expected by this tool is:
-
-```text
-/usr/lib/pkcs11/libgclib.so
-```
-
-On Arch Linux, this is provided by the `cedula-uruguay-pkcs11` AUR package.
+The tool expects the Uruguayan cédula PKCS#11 module (`/usr/lib/pkcs11/libgclib.so`), provided on
+Arch Linux by the `cedula-uruguay-pkcs11` AUR package. Install it as shown in
+[Setup on Arch Linux](#setup-on-arch-linux).
 
 > **Native mode (optional):** every signing command also accepts `--native`, which talks to the
 > cédula directly over PC/SC (pcscd and a reader) and needs **no PKCS#11 middleware** at all. It is
@@ -116,11 +114,18 @@ Use version `7.5.0-2` or later; older versions could crash the process when a wr
 
 ## Installation
 
-### Installation with uv
+FirmaUY is published on PyPI. Install it as a standalone CLI with [`uv`](https://docs.astral.sh/uv/)
+(recommended) or into your current environment with `pip`:
 
 ```bash
-uv tool install firmauy
+uv tool install firmauy      # recommended: isolated CLI on your PATH
+pip install firmauy          # or into the current Python environment
 ```
+
+Installing the package does **not** install the smart-card stack. You still need `pcscd`, a reader
+and the PKCS#11 middleware (or `--native`, which needs only `pcscd`). See
+[Requirements](#requirements) and [Setup on Arch Linux](#setup-on-arch-linux), then run
+`firmauy doctor` to check everything is in place.
 
 ## Commands
 
@@ -193,11 +198,6 @@ Note: the signing commands print a summary that includes identifying data (signe
 
 Note: `fetch-identity` reads and prints the cardholder's biographical data (names, birth date, birthplace, document number, MRZ), and `fetch-photo` outputs the cardholder's photo (to a file, a redirected stream, or a JSON record). This data is accessible from the card without PIN authentication, but it is still personal: pass `--redact` to `fetch-identity` to replace every field with `[REDACTED]` before sharing its output, use `fetch-photo --json --redact` for a metadata-only photo record, and treat any non-redacted output (file, redirected stream, or receiving application) as sensitive.
 
-## Additional notes
-
-- The default visual signature appearance was modeled on real documents signed with the Uruguayan ID card.
-- This project focuses on practical interoperability rather than strict compliance with any specific implementation.
-
 ## Legal and compliance
 
 This project is copyright-registered, experimental, community-maintained, and not officially certified.
@@ -227,7 +227,7 @@ It is **not** intended to replace official, certified, or legally guaranteed sig
 
 ### Scope
 
-This tool focuses on technical integration with PKCS#11: signing (PDF/PAdES, XML/XAdES, files/CAdES) and local, standards-based verification, including certificate-chain validation to the Uruguayan national root.
+This tool focuses on technical integration with PKCS#11: signing (PDF/PAdES, XML/XAdES, files/CAdES) and local, standards-based verification, including certificate-chain validation to the Uruguayan national root. It aims for practical interoperability with standard validators rather than strict compliance with any specific implementation.
 
 It is **not** an official validator: it does not consult the official trust-service status list (TSL) or evaluate accreditation / qualified status, provide legal guarantees, or replace certified signing platforms.
 

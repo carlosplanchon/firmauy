@@ -2630,8 +2630,8 @@ def fetch_cas_cmd(
         help="PEM/DER file(s) to seed the cache from instead of downloading. Any "
              "certificate matching a pinned fingerprint (national root and/or the "
              "Ministerio del Interior intermediate) is used; anything not supplied is "
-             "downloaded. Useful when the intermediate's source is unreachable (its "
-             "official server is decommissioned). Repeatable; bundles are accepted.",
+             "downloaded. Useful when the intermediate's official source is unreachable. "
+             "Repeatable; bundles are accepted.",
     ),
 ) -> None:
     """Optional: refresh the national CA certificates from the network.
@@ -2640,9 +2640,9 @@ def fetch_cas_cmd(
     with the package. This only re-downloads them into a per-user cache (which takes precedence
     over the bundled copies). Each certificate is verified against a pinned fingerprint before
     caching, and the intermediate is checked to be signed by the root, so the cache can only
-    ever hold the same pinned certificates. The root downloads reliably; the Ministerio del
-    Interior intermediate's official server is decommissioned, so it falls back to a Certificate
-    Transparency mirror, or pass a local copy with --from-file.
+    ever hold the same pinned certificates. If the Ministerio del Interior intermediate's official
+    source is unreachable, fetch-cas falls back to a Certificate Transparency mirror, or you can
+    pass a local copy with --from-file.
     """
     try:
         acrn_path, mica_path = fetch_cas(

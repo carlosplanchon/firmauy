@@ -1,8 +1,8 @@
 """Offline tests for the trust-anchor download logic (multi-source + retry + progress).
 
 No network: `_download` / `urlopen` / `time.sleep` are monkeypatched. These cover the
-resilience added because the official MI intermediate URL is decommissioned (HTTP 501) and
-the crt.sh fallback flakes with transient 5xx / timeouts.
+resilience for when the official MI intermediate URL is unreachable and the crt.sh fallback
+flakes with transient 5xx / timeouts.
 """
 
 import datetime

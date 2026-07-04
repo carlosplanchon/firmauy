@@ -13,9 +13,8 @@ the user supplies their *own* trust anchors for verification; those are intentio
 pinned, since the whole point is to trust a set the user chose.)
 
 ``fetch_cas()`` refreshes a per-user cache from public sources (with a Certificate Transparency
-fallback, since the MI's own repository ``ca.minterior.gub.uy`` has been decommissioned and now
-returns HTTP 501). The bundled copies are the built-in fallback used when there is no cache and
-no ``--ca-file``.
+fallback, used when the official ``ca.minterior.gub.uy`` source is unreachable). The bundled
+copies are the built-in fallback used when there is no cache and no ``--ca-file``.
 """
 
 import hashlib
@@ -43,11 +42,11 @@ MICA_SHA256 = "a29cad5c89aa49cff81f17f45c42fd44685510246d9ab5d031448e2fda2517be"
 # AC Raíz Nacional (AGESIC).
 ACRN_URL = "https://www.uce.gub.uy/acrn/acrn.cer"
 
-# AC Ministerio del Interior (intermediate), tried in order. The official MI repository
-# is decommissioned (HTTP 501), so the byte-identical CT-log copy on crt.sh is the
-# working fallback; the pinned fingerprint above guards both.
+# AC Ministerio del Interior (intermediate), tried in order. If the official source is
+# unreachable, the byte-identical CT-log copy on crt.sh is the fallback, and the pinned
+# fingerprint above guards both.
 MICA_URLS = (
-    "https://ca.minterior.gub.uy/certificados/MICA.cer",  # official (currently HTTP 501)
+    "https://ca.minterior.gub.uy/certificados/MICA.cer",  # official source, tried first
     "https://crt.sh/?d=29172099",                          # Certificate Transparency mirror
 )
 
@@ -99,9 +98,9 @@ def _certs_from_files(paths: Optional[list]) -> dict:
 
 # Transport-level retry. crt.sh sits behind Cloudflare and flakes with intermittent
 # 5xx / connection resets / timeouts, so transient failures are retried with exponential
-# backoff + jitter (honouring a Retry-After header when the server sends one). 501 (the
-# decommissioned MI server) is a permanent "not served": it is not retried, so we fall
-# through to the next source at once.
+# backoff + jitter (honouring a Retry-After header when the server sends one). A 501 is
+# treated as a permanent "not served" rather than a transient error: it is not retried, so
+# we fall through to the next source at once.
 _RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504})
 _RETRIES = 4
 _BACKOFF_BASE = 1.0       # seconds; doubles each attempt
@@ -221,7 +220,7 @@ def fetch_cas(
 
     Certificates whose fingerprint matches a pin are taken from ``source_files`` (PEM/DER)
     when supplied; whatever is not provided there is downloaded. This lets a user seed the
-    cache offline when a source is unreachable (e.g. the decommissioned MI server). The
+    cache offline when a source is unreachable (e.g. the official MI server). The
     fingerprint pin makes the origin irrelevant. ``progress``, if given, receives
     human-readable status lines as sources are used, retried or fall back."""
     local = _certs_from_files(source_files)

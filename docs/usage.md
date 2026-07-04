@@ -169,7 +169,8 @@ aspect ratio. `--image` is also available on `sign-pdf-batch`.
 
 ### Specify page
 
-Pages are 0-indexed. Use `-1` to sign the last page.
+Pages are 0-indexed. `--page` defaults to `-1` (the **last** page), so pass `--page 0` for the first
+page or any other index to place the visible signature elsewhere.
 
 ```bash
 firmauy sign-pdf input.pdf output_signed.pdf --page 0

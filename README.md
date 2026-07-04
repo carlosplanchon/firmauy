@@ -227,7 +227,7 @@ It is **not** intended to replace official, certified, or legally guaranteed sig
 
 ### Scope
 
-This tool focuses on technical integration with PKCS#11: signing (PDF/PAdES, XML/XAdES, files/CAdES) and local, standards-based verification, including certificate-chain validation to the Uruguayan national root. It aims for practical interoperability with standard validators rather than strict compliance with any specific implementation.
+This tool focuses on technical integration with PKCS#11: signing (PDF/PAdES, XML/XAdES, files/CAdES) and local, standards-based verification, including certificate-chain validation to the Uruguayan national root. It aims for practical interoperability rather than strict compliance with any specific implementation.
 
 It is **not** an official validator: it does not consult the official trust-service status list (TSL) or evaluate accreditation / qualified status, provide legal guarantees, or replace certified signing platforms.
 

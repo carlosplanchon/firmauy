@@ -862,18 +862,73 @@ def test_fetch_photo_to_file_writes_bytes_and_reports_on_stdout(tmp_path, monkey
     assert "Photo saved" in capsys.readouterr().out
 
 
+def test_fetch_photo_default_output_when_omitted(tmp_path, monkeypatch, capsys):
+    # Omitting the output argument (None from typer) still writes the effective default,
+    # cedula_foto.jpg in the current directory.
+    from firmauy import cli
+
+    conn = _FakeConn()
+    _patch_card(monkeypatch, conn)
+    monkeypatch.chdir(tmp_path)
+
+    cli.fetch_photo_cmd(output=None, reader_name=None, overwrite=False,
+                        json_output=False, json_pretty=False, redact=False)
+
+    assert (tmp_path / "cedula_foto.jpg").read_bytes() == _JPEG
+    assert conn.disconnected
+    assert "Photo saved" in capsys.readouterr().out
+
+
+def test_fetch_photo_existing_output_requires_overwrite(tmp_path, monkeypatch, capsys):
+    # An existing output file is refused without --overwrite, before the card is even opened,
+    # and its bytes are left untouched.
+    import typer
+
+    from firmauy import cli
+
+    opened = {"n": 0}
+    monkeypatch.setattr(cli, "open_reader",
+                        lambda name=None: opened.__setitem__("n", opened["n"] + 1))
+
+    out = tmp_path / "foto.jpg"
+    out.write_bytes(b"previous")
+
+    with pytest.raises(typer.Exit):
+        cli.fetch_photo_cmd(output=out, reader_name=None, overwrite=False,
+                            json_output=False, json_pretty=False, redact=False)
+
+    assert opened["n"] == 0
+    assert out.read_bytes() == b"previous"
+    assert "--overwrite" in capsys.readouterr().err
+
+
+def test_fetch_photo_overwrite_replaces_existing_file(tmp_path, monkeypatch):
+    from firmauy import cli
+
+    conn = _FakeConn()
+    _patch_card(monkeypatch, conn)
+
+    out = tmp_path / "foto.jpg"
+    out.write_bytes(b"previous")
+
+    cli.fetch_photo_cmd(output=out, reader_name=None, overwrite=True,
+                        json_output=False, json_pretty=False, redact=False)
+
+    assert out.read_bytes() == _JPEG
+    assert conn.disconnected
+
+
 # --- fetch-photo --json record (stdout, redaction, conflict with a file/'-') ----------------------
 
 def test_fetch_photo_json_emits_record_to_stdout(monkeypatch, capsys):
     import base64
-    from pathlib import Path
 
     from firmauy import cli
 
     conn = _FakeConn()
     _patch_card(monkeypatch, conn)
 
-    cli.fetch_photo_cmd(output=Path("cedula_foto.jpg"), reader_name=None, overwrite=False,
+    cli.fetch_photo_cmd(output=None, reader_name=None, overwrite=False,
                         json_output=True, json_pretty=False, redact=False)
 
     obj = json.loads(capsys.readouterr().out)
@@ -886,13 +941,11 @@ def test_fetch_photo_json_emits_record_to_stdout(monkeypatch, capsys):
 
 
 def test_fetch_photo_json_redact_drops_image_and_hash(monkeypatch, capsys):
-    from pathlib import Path
-
     from firmauy import cli
 
     _patch_card(monkeypatch, _FakeConn())
 
-    cli.fetch_photo_cmd(output=Path("cedula_foto.jpg"), reader_name=None, overwrite=False,
+    cli.fetch_photo_cmd(output=None, reader_name=None, overwrite=False,
                         json_output=True, json_pretty=False, redact=True)
 
     obj = json.loads(capsys.readouterr().out)
@@ -920,6 +973,47 @@ def test_fetch_photo_json_rejects_file_path(monkeypatch, capsys):
 
     assert opened["n"] == 0
     assert "cannot be combined" in capsys.readouterr().err.lower()
+
+
+def test_fetch_photo_json_rejects_explicit_default_path(monkeypatch, capsys):
+    # A path that happens to spell out the default (cedula_foto.jpg) is still an explicit path:
+    # with --json it must be refused, not silently treated as "no path given".
+    from pathlib import Path
+
+    import typer
+
+    from firmauy import cli
+
+    opened = {"n": 0}
+    monkeypatch.setattr(cli, "open_reader",
+                        lambda name=None: opened.__setitem__("n", opened["n"] + 1))
+
+    with pytest.raises(typer.Exit):
+        cli.fetch_photo_cmd(output=Path("cedula_foto.jpg"), reader_name=None, overwrite=False,
+                            json_output=True, json_pretty=False, redact=False)
+
+    assert opened["n"] == 0
+    assert "cannot be combined" in capsys.readouterr().err.lower()
+
+
+def test_fetch_photo_redact_without_json_is_refused(monkeypatch, capsys):
+    # --redact only shapes the --json record; on a file or stream it would either write nothing or
+    # silently save the full photo despite the privacy flag, so it is refused before opening the
+    # card.
+    import typer
+
+    from firmauy import cli
+
+    opened = {"n": 0}
+    monkeypatch.setattr(cli, "open_reader",
+                        lambda name=None: opened.__setitem__("n", opened["n"] + 1))
+
+    with pytest.raises(typer.Exit):
+        cli.fetch_photo_cmd(output=None, reader_name=None, overwrite=False,
+                            json_output=False, json_pretty=False, redact=True)
+
+    assert opened["n"] == 0
+    assert "--json" in capsys.readouterr().err
 
 
 # --- fetch-identity carries the same top-level redacted flag -------------------------------------

@@ -873,7 +873,7 @@ With `--json` (or `--json-pretty`) a self-describing record is written to stdout
   "width": 240, "height": 320, "bytes": 10159, "sha256": "...", "base64": "/9j/4AAQ..." }
 ```
 
-`--redact` drops the image **and** every value that could fingerprint or correlate the cardholder (the `sha256` of a face photo is a stable per-card identifier, and the byte count leaks the same way), leaving only the non-identifying shape of the file (format, MIME type, dimensions) plus `redacted: true`. The sensitive keys are **omitted rather than stringified**, so the record stays well-typed and is safer to log or share:
+`--redact` drops the image **and** every value that could fingerprint or correlate the cardholder (the `sha256` of a face photo is a stable per-card identifier, and the byte count leaks the same way), leaving only the non-identifying shape of the file (format, MIME type, dimensions) plus `redacted: true`. Without `--json` it is refused rather than ignored: the photo itself is the identifying data, so a redacted file or stream would have nothing to write. The sensitive keys are **omitted rather than stringified**, so the record stays well-typed and is safer to log or share:
 
 ```json
 { "schema_version": 1, "redacted": true, "format": "jpeg", "mime": "image/jpeg", "width": 240, "height": 320 }

@@ -2842,12 +2842,13 @@ def fetch_identity_cmd(
 @app.command("fetch-photo")
 def fetch_photo_cmd(
     output: Annotated[
-        Path,
+        Optional[Path],
         typer.Argument(
             help='Output JPEG path, or "-" to stream the raw JPEG to stdout (for pipes/redirects). '
-                 "Default: cedula_foto.jpg"
+                 "Default: cedula_foto.jpg",
+            show_default=False,
         ),
-    ] = Path("cedula_foto.jpg"),
+    ] = None,
     reader_name: Annotated[
         Optional[str],
         typer.Option(
@@ -2864,8 +2865,9 @@ def fetch_photo_cmd(
     redact: bool = typer.Option(
         False,
         "--redact",
-        help="In --json output, drop the image and any value that could fingerprint or correlate "
-             "the cardholder (SHA-256, byte count), keeping only format and pixel dimensions.",
+        help="Requires --json / --json-pretty: drop the image and any value that could fingerprint "
+             "or correlate the cardholder (SHA-256, byte count), keeping only format and pixel "
+             "dimensions.",
     ),
 ) -> None:
     """Save the cardholder's photo (a JPEG) from the cédula, via a PC/SC reader.
@@ -2877,17 +2879,30 @@ def fetch_photo_cmd(
 
     With --json (or --json-pretty) a self-describing record is written to stdout instead: format, MIME
     type, pixel dimensions, byte count, SHA-256 and the base64-encoded image. --redact drops the image
-    and the correlatable values, leaving only the non-identifying shape of the file.
+    and the correlatable values, leaving only the non-identifying shape of the file. Without --json,
+    --redact is refused: the photo itself is the identifying data, so a redacted file or stream would
+    have nothing to write.
 
     Note: do not run while a PKCS#11 session (sign-* commands) is active on the same card; both go
     through pcscd and may conflict.
     """
-    to_stdout = str(output) == "-"
+    to_stdout = output is not None and str(output) == "-"
     json_output = json_output or json_pretty
+    # None means the argument was omitted, so an explicit path that merely spells out the default
+    # is still detected (and refused) alongside --json.
+    out_path = output if output is not None else Path("cedula_foto.jpg")
     try:
+        if redact and not json_output:
+            # The photo is the identifying data itself: honouring --redact on a file or stream
+            # would write nothing, and ignoring it would save the full image after a privacy flag.
+            raise RuntimeError(
+                "--redact only applies to the --json / --json-pretty record. A redacted photo "
+                "file or stream would have nothing to write. Use "
+                "`firmauy fetch-photo --json --redact`."
+            )
         if json_output:
             # --json prints a text record to stdout; a binary file path or "-" would be ambiguous.
-            if output != Path("cedula_foto.jpg"):
+            if output is not None:
                 raise RuntimeError(
                     "--json / --json-pretty write the photo record to stdout and cannot be combined "
                     "with a file path or '-'. Redirect instead, e.g. "
@@ -2899,9 +2914,9 @@ def fetch_photo_cmd(
                     "Refusing to write binary JPEG to a terminal. Redirect or pipe it, e.g. "
                     "`firmauy fetch-photo - > cedula_foto.jpg` or `firmauy fetch-photo - | feh -`."
                 )
-        elif output.exists() and not overwrite:
+        elif out_path.exists() and not overwrite:
             raise RuntimeError(
-                f"Output file already exists: {output}\nUse --overwrite to overwrite it."
+                f"Output file already exists: {out_path}\nUse --overwrite to overwrite it."
             )
         with _card_connection(reader_name) as conn:
             photo = read_photo(conn)
@@ -2919,9 +2934,9 @@ def fetch_photo_cmd(
             typer.secho(f"Photo streamed to stdout ({len(photo)} bytes).",
                         fg=typer.colors.GREEN, err=True)
         else:
-            ensure_output_parent(output)
-            output.write_bytes(photo)
-            typer.secho(f"Photo saved: {output} ({len(photo)} bytes)", fg=typer.colors.GREEN)
+            ensure_output_parent(out_path)
+            out_path.write_bytes(photo)
+            typer.secho(f"Photo saved: {out_path} ({len(photo)} bytes)", fg=typer.colors.GREEN)
     except Exception as exc:
         typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)

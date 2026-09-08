@@ -195,8 +195,11 @@ def _verify_signature(
     tsa_other_certs: Optional[list] = None,
 ) -> VerifyResult:
     """Verify one already-located <ds:Signature> element. The document-level enveloped digest is
-    computed over `root` (all signatures stripped, per this tool's enveloped convention), while
-    every other check is scoped to `sig`, so a multi-signature document verifies each independently."""
+    computed over `root` with `sig` removed and every other signature left in place, which is the
+    enveloped transform as XMLDSig 6.6.4 defines it, and every other check is scoped to `sig`, so
+    a multi-signature document verifies each independently. A later enveloped signature covers
+    the earlier ones, so one appended to a signed document leaves the earlier digest no longer
+    matching: that is the specification's verdict, and `sign_xml` refuses to produce such a file."""
     checks: list = []
 
     si = sig.find(_ds("SignedInfo"))
@@ -218,7 +221,7 @@ def _verify_signature(
     # uncaught AttributeError -- verify_xml is routinely handed untrusted input.
     dv_doc = ref_doc.find(_ds("DigestValue")) if ref_doc is not None else None
     if ref_doc is not None and dv_doc is not None:
-        got = _compute_enveloped_digest(root)
+        got = _compute_enveloped_digest(root, sig)
         stated = (dv_doc.text or "").strip()
         checks.append(Check("document digest (reference)", got == stated))
     else:

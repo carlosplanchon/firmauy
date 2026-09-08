@@ -260,6 +260,11 @@ def test_the_appearance_rejects_a_bad_value_before_the_card_is_touched():
         PdfAppearance(x2=10)                        # x2 below the default x1 of 20
     with pytest.raises(ValueError, match="empty or inverted"):
         PdfAppearance(y1=90, y2=90)                 # zero height, which draws nothing
+    # zoneinfo answers an unknown zone with a KeyError, which a caller checking arguments has no
+    # reason to expect. Translated, and raised here rather than where the stamp is drawn, which
+    # is after the PIN.
+    with pytest.raises(ValueError, match="not a valid IANA time zone"):
+        PdfAppearance(timezone="Nope/Nowhere")
     with pytest.raises(FileNotFoundError, match="stamp image not found"):
         PdfAppearance(image="/nowhere/logo.png")
 

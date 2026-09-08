@@ -140,17 +140,14 @@ def test_signedprops_reference_without_digestvalue_is_invalid_not_crash(cert_val
 
 # --- multiple signatures: one result per <ds:Signature> (parity with verify_pdf) --------------
 
-def _sign_with_cn(xml_bytes: bytes, cn: str) -> bytes:
-    """Sign `xml_bytes` (enveloped XAdES) with a throwaway self-signed cert whose CN is `cn`.
-    Called twice on the same document to produce a genuine two-signature (co-signed) XML."""
+def _throwaway_signer(cn: str):
+    """A self-signed certificate whose CN is `cn`, a callable that signs with its key, and now."""
     import datetime
 
     from cryptography import x509
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.asymmetric import padding, rsa
     from cryptography.x509.oid import NameOID
-
-    from firmauy.xml_sign import sign_xml
 
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -161,42 +158,92 @@ def _sign_with_cn(xml_bytes: bytes, cn: str) -> bytes:
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=365)).sign(key, hashes.SHA256())
     )
-    return sign_xml(xml_bytes, cert=cert,
-                    signer=lambda d: key.sign(d, padding.PKCS1v15(), hashes.SHA256()),
-                    signing_time=now)
+    return cert, (lambda d: key.sign(d, padding.PKCS1v15(), hashes.SHA256())), now
 
 
-def test_two_signatures_are_each_verified():
-    # Co-sign the same document twice (each pass appends a <ds:Signature>). verify_xml must return
-    # one result per signature -- like verify_pdf -- each with its own signer, not just the first.
+def _sign_with_cn(xml_bytes: bytes, cn: str) -> bytes:
+    """Sign `xml_bytes` (enveloped XAdES) with a throwaway self-signed cert whose CN is `cn`."""
+    from firmauy.xml_sign import sign_xml
+
+    cert, signer, now = _throwaway_signer(cn)
+    return sign_xml(xml_bytes, cert=cert, signer=signer, signing_time=now)
+
+
+def _countersign_with_cn(signed_xml: bytes, cn: str) -> bytes:
+    """Append a second enveloped signature the way the specification describes it: over the
+    document as it now is, first signature included. `sign_xml` refuses to build this file, for
+    the reason the tests below show, so this reaches past it to the builder."""
+    from lxml import etree
+
+    from firmauy.xml_sign import _secure_parser, _sign_root
+
+    cert, signer, now = _throwaway_signer(cn)
+    root = etree.fromstring(signed_xml, parser=_secure_parser())
+    return _sign_root(root, cert=cert, signer=signer, signing_time=now)
+
+
+def test_each_root_level_signature_gets_its_own_result_and_signer():
+    # verify_xml returns one result per <ds:Signature>, like verify_pdf, each with its own signer:
+    # the leaf certificate is read per signature, not once from the whole document.
     once = _sign_with_cn(b"<?xml version='1.0'?><r><d>x</d></r>", "SIGNER ONE")
-    twice = _sign_with_cn(once, "SIGNER TWO")
+    twice = _countersign_with_cn(once, "SIGNER TWO")
 
     results = verify_xml(twice, trust_roots=None)
-    assert len(results) == 2
-    assert all(r.indication == "INDETERMINATE" for r in results)   # core intact, trust not checked
-    assert all(c.ok for r in results for c in r.checks), \
-        [(c.name, c.detail) for r in results for c in r.checks if not c.ok]
-    # Each result carries its OWN signer -- proves the leaf cert is read per <ds:Signature>, not
-    # once globally from the whole document.
-    assert {r.signer["common_name"] for r in results} == {"SIGNER ONE", "SIGNER TWO"}
+    assert [r.signer["common_name"] for r in results] == ["SIGNER ONE", "SIGNER TWO"]
 
 
-def test_one_broken_signature_is_reported_alongside_the_valid_one():
-    # A document with one intact and one corrupted signature must surface BOTH (so the CLI's
-    # worst-indication aggregation can flag it), not silently pass on the first.
+def test_a_second_enveloped_signature_covers_the_first_and_says_so():
+    """XMLDSig 6.6.4: the enveloped transform removes the Signature that contains the reference
+    and nothing else. The second signature's digest is therefore over the document with the first
+    one still in it, and matches. The first one's digest was computed before the second existed,
+    and no longer matches. That is the verdict every validator following the specification gives,
+    and the reason sign_xml refuses to produce this file. Every digest used to be computed with
+    all signatures removed, which made this document verify here and nowhere else."""
+    once = _sign_with_cn(b"<?xml version='1.0'?><r><d>x</d></r>", "SIGNER ONE")
+    twice = _countersign_with_cn(once, "SIGNER TWO")
+
+    first, second = verify_xml(twice, trust_roots=None)
+
+    assert second.indication == "INDETERMINATE"      # intact, trust not checked
+    assert all(c.ok for c in second.checks), [(c.name, c.detail) for c in second.checks if not c.ok]
+
+    assert first.indication == "INVALID"
+    failed = [c.name for c in first.checks if not c.ok]
+    assert failed == ["document digest (reference)"]   # a good signature over a document that changed
+
+
+def test_a_broken_second_signature_is_reported_with_its_own_reason():
+    # Both signatures surface, each with the checks that failed on it: the CLI's worst-indication
+    # aggregation can only flag what the verifier reports.
     from lxml import etree
 
     from firmauy.xml_sign import _ds
 
     once = _sign_with_cn(b"<?xml version='1.0'?><r><d>x</d></r>", "SIGNER ONE")
-    twice = _sign_with_cn(once, "SIGNER TWO")
+    twice = _countersign_with_cn(once, "SIGNER TWO")
 
     root = etree.fromstring(twice)
-    first_sv = root.findall(_ds("Signature"))[0].find(_ds("SignatureValue"))
-    t = (first_sv.text or "").strip()
-    first_sv.text = ("B" if t[0] != "B" else "A") + t[1:]   # flip one b64 char -> bad signature
+    second_sv = root.findall(_ds("Signature"))[1].find(_ds("SignatureValue"))
+    t = (second_sv.text or "").strip()
+    second_sv.text = ("B" if t[0] != "B" else "A") + t[1:]   # flip one b64 char -> bad signature
 
-    results = verify_xml(etree.tostring(root), trust_roots=None)
-    assert len(results) == 2
-    assert sorted(r.indication for r in results) == ["INDETERMINATE", "INVALID"]
+    first, second = verify_xml(etree.tostring(root), trust_roots=None)
+    assert [c.name for c in first.checks if not c.ok] == ["document digest (reference)"]
+    assert [c.name for c in second.checks if not c.ok] == ["SignedInfo signature (RSA-SHA256)"]
+
+
+def test_the_enveloped_transform_keeps_the_text_after_the_signature():
+    """A pretty-printed document has a newline between </ds:Signature> and the closing root tag.
+    That newline is a text node of the root, not of the signature, and a validator following the
+    specification digests it. lxml's remove() takes an element's tail along with it, which
+    computed a digest no other validator would."""
+    from lxml import etree
+
+    from firmauy.xml_sign import _c14n, _compute_enveloped_digest, _ds, _sha256_b64
+
+    root = etree.fromstring(
+        b"<r><d>x</d><ds:Signature xmlns:ds='http://www.w3.org/2000/09/xmldsig#'/>\n</r>")
+    sig = root.find(_ds("Signature"))
+
+    expected = _sha256_b64(_c14n(etree.fromstring(b"<r><d>x</d>\n</r>")))
+    assert _compute_enveloped_digest(root, sig) == expected

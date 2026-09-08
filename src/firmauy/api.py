@@ -17,6 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Optional, Union
+from zoneinfo import ZoneInfo
 
 from firmauy.cms_verify import verify_cms
 from firmauy.pdf_verify import verify_pdf
@@ -256,6 +257,18 @@ class PdfAppearance:
             raise ValueError(
                 f"the stamp box is empty or inverted: ({self.x1}, {self.y1}) to "
                 f"({self.x2}, {self.y2}). x2 must exceed x1 and y2 must exceed y1.")
+        # A zone is a lookup in the tz database, so a misspelt one is knowable here. It was not
+        # looked up until the stamp was drawn, inside the signing call, after the PIN had been
+        # verified: the ordering this method exists to prevent. Anything the lookup refuses is
+        # refused, an unknown key as much as the empty or path-like strings ZoneInfo will not
+        # look up, and as a ValueError, because an unknown zone arrives as a KeyError and a
+        # caller checking arguments has no reason to expect one.
+        try:
+            ZoneInfo(self.timezone)
+        except Exception as exc:
+            raise ValueError(
+                f"timezone {self.timezone!r} is not a valid IANA time zone: "
+                f"{exc.args[0] if exc.args else exc}") from exc
         if self.image is not None and not Path(self.image).is_file():
             raise FileNotFoundError(f"stamp image not found: {self.image}")
 

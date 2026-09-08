@@ -245,8 +245,8 @@ certificate just as precisely without putting somebody's document number on ever
 they send out.
 
 Values are validated when the `PdfAppearance` is constructed rather than during signing, so a bad
-coordinate, an opacity outside 0 to 1, an unknown mode or a missing image file all raise before the
-PIN is asked for and before the card spends one of its tries.
+coordinate, an opacity outside 0 to 1, an unknown mode, an unknown time zone or a missing image
+file all raise before the PIN is asked for and before the card spends one of its tries.
 
 The same options are on the CLI, as `--corner` and `--margin`, and the five lines are
 turned off with `--no-stamp-title`,
@@ -256,6 +256,12 @@ turned off with `--no-stamp-title`,
 
 `sign_xml()` signs an XML and returns it with a XAdES-BES signature embedded (XAdES-T with
 `tsa_url`). The output defaults to `<name>_firmado.xml`.
+
+A document that already carries a signature over its whole content at the root is refused with a
+`RuntimeError`. An enveloped signature covers the entire document, the existing signature
+included, and under the XMLDSig enveloped transform every validator would then report the
+existing one as no longer matching the document. Sign the signed XML as a detached CAdES with
+`sign_file()` instead, which leaves it untouched, or sign the original unsigned document.
 
 ```python
 from firmauy.api import sign_xml

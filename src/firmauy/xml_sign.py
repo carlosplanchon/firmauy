@@ -88,14 +88,42 @@ def _nl_block(elem) -> None:
         child.tail = "\n"
 
 
-def _compute_enveloped_digest(root) -> str:
-    """Enveloped-transform output for this tool's convention: C14N(root with *every* <ds:Signature>
-    removed). Stripping all signatures (not just the current one) is what lets signatures co-sign the
-    same document -- each covers the identical signature-free content -- so this document digest is
-    stable no matter how many signatures the document carries."""
+def _remove_keeping_tail(elem) -> None:
+    """Take ``elem`` out of its parent and leave the text that followed it where it was.
+
+    lxml hands an element's tail to the element, so ``remove()`` takes the tail along. In the XML
+    data model that text is a sibling node of the element and belongs to the parent, and the
+    enveloped transform below removes the element and nothing else. A pretty-printed document has
+    a newline between ``</ds:Signature>`` and the closing root tag, a validator following the
+    specification digests that newline, and dropping it computed a digest nobody else would.
+    """
+    parent = elem.getparent()
+    if elem.tail:
+        previous = elem.getprevious()
+        if previous is not None:
+            previous.tail = (previous.tail or "") + elem.tail
+        else:
+            parent.text = (parent.text or "") + elem.tail
+    parent.remove(elem)
+
+
+def _compute_enveloped_digest(root, sig) -> str:
+    """The enveloped-signature transform of XMLDSig section 6.6.4, then C14N and SHA-256: the
+    document with *this* ``<ds:Signature>`` removed and every other one left in place.
+
+    Only this one, which is what the transform says and what every other validator computes.
+    The convention here used to be to strip every signature, so that two of them could each
+    cover the same signature-free content. That made a document carrying two firmauy signatures
+    verify here and nowhere else: a validator following the specification computes each digest
+    over the document with the other signature still in it, and reports both as not matching.
+
+    ``sig`` must be a direct child of ``root``, which is where this module puts it and the only
+    place ``xml_verify`` looks for one. It is found in the copy by position, since a deep copy
+    keeps no identities.
+    """
+    index = list(root).index(sig)
     root_copy = copy.deepcopy(root)
-    for sig in root_copy.findall(_ds("Signature")):
-        root_copy.remove(sig)
+    _remove_keeping_tail(root_copy[index])
     return _sha256_b64(_c14n(root_copy))
 
 
@@ -210,16 +238,60 @@ def sign_xml(
     With `timestamper` (a pyHanko TimeStamper), a XAdES-T SignatureTimeStamp is added over the
     SignatureValue, upgrading the result from XAdES-BES to XAdES-T.
     Returns the signed XML as UTF-8 bytes.
+
+    Raises ``RuntimeError`` for a document that already carries a signature over its whole
+    content at the root: see :func:`_refuse_to_countersign` for why there is no version of that
+    file worth producing.
     """
     if len(xml_bytes) > MAX_XML_BYTES:
         raise ValueError(
             f"XML input exceeds the {MAX_XML_BYTES} byte limit; refusing to parse it"
         )
     root = etree.fromstring(xml_bytes, parser=_secure_parser())
+    _refuse_to_countersign(root)
+    return _sign_root(root, cert=cert, signer=signer, signing_time=signing_time,
+                      timestamper=timestamper)
+
+
+def _refuse_to_countersign(root) -> None:
+    """Raise if a signature already at the root covers the whole document.
+
+    An enveloped signature over the root covers everything under it, an existing signature
+    included, and that existing signature was computed before the new one was there. Under the
+    enveloped transform as specified, every validator then reports it as no longer matching the
+    document. Refused rather than warned about, because there is no version of that file worth
+    having: the way to put a second signature on a signed XML without touching it is a detached
+    CAdES over the whole file, which ``sign --as cades`` produces.
+
+    Only a whole-document reference counts, ``URI=""`` or no URI at all. A signature over one
+    element by Id is covered by the new signature like any other content and stays exactly as
+    valid as it was.
+    """
+    for existing in root.findall(_ds("Signature")):
+        refs = existing.findall(f"{_ds('SignedInfo')}/{_ds('Reference')}")
+        if any((ref.get("URI") or "") == "" for ref in refs):
+            raise RuntimeError(
+                "The document already carries a signature over its whole content. A second "
+                "enveloped signature would cover the existing one and leave it no longer matching "
+                "the document under the XMLDSig enveloped transform, which every validator would "
+                "report as a broken signature. To add a signature to a signed XML, sign the signed "
+                "file as a detached CAdES .p7s (`sign --as cades`), or sign the original unsigned "
+                "document."
+            )
+
+
+def _sign_root(root, *, cert: x509.Certificate, signer: RawSigner, signing_time: datetime,
+               timestamper=None) -> bytes:
+    """Append a signature to an already parsed root and serialize the result.
+
+    What :func:`sign_xml` does once it has decided the document may take one. Separate so the
+    countersignature the specification describes can be built where it is wanted, which is in
+    the tests that show what it does to the signature already there.
+    """
     p = _build_signature(root, cert, signing_time)
 
     # Phase 1: reference digests.
-    p["ref0_dv"].text = _compute_enveloped_digest(root)
+    p["ref0_dv"].text = _compute_enveloped_digest(root, p["sig"])
     p["refp_dv"].text = _sha256_b64(_c14n(p["sp"]))
 
     # Phase 2: sign the canonical SignedInfo on the token.

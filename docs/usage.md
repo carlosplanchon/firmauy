@@ -244,6 +244,15 @@ Signature profile produced:
 - **Algorithms:** RSA-SHA256 signature, SHA-256 digests.
 - **Signed properties:** signing time, signing-certificate digest and data-object format.
 
+**A signed XML is not signed again.** `sign-xml` refuses a document that already carries a
+signature over its whole content at the root. An enveloped signature covers the entire document,
+the existing signature included, and the existing one was computed before the new one was there:
+under the XMLDSig enveloped transform every validator would then report it as no longer matching
+the document. To add a signature to a signed XML, sign the signed file as a detached CAdES `.p7s`
+with `firmauy sign firmado.xml --as cades`, which leaves the XML and its signature untouched, or
+sign the original unsigned document. The note under
+[Verify a signed XML](#verify-a-signed-xml) says what changed.
+
 ⚠️ This is the XAdES-**BES** level (no trusted timestamp). The produced signature is
 cryptographically valid and conforms to the XAdES standard. Legal and regulatory validity
 depends on your use case and applicable rules.
@@ -568,6 +577,20 @@ otherwise happen within a year or two of signing.
 What it checks (XAdES): the `SignedInfo` signature, each reference digest (so any change to the
 document is detected), the XAdES signing-certificate binding, and the certificate chain to a trusted
 root (RFC 5280 path validation).
+
+Each `<ds:Signature>` at the document root gets its own result, and the overall indication is the
+worst one, as with a PDF. The document digest of each signature is computed with only that
+signature removed, which is what the enveloped transform means. A document that was signed a
+second time by appending another enveloped signature therefore reports the earlier one as no
+longer matching the document, because the earlier digest was computed before the later signature
+existed. That is the verdict every validator following the specification gives, and the reason
+`sign-xml` refuses to produce such a file.
+
+> **Changed in 1.18.0:** every digest used to be computed over the document with *all* signatures
+> removed, a convention of this tool's own, so two firmauy signatures on one XML verified with
+> firmauy and with nothing else, and a document countersigned by another tool did not verify here.
+> Signing and verification now follow the transform as specified. A document with one signature,
+> which is every document `sign-xml` produces, is unaffected in both directions.
 
 ## Common verification options and output
 

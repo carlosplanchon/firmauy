@@ -827,6 +827,74 @@ def _adopt_replaced(fd: int, path: Path) -> Optional[_Replaced]:
     return replaced
 
 
+# What the kernel answers when a filesystem cannot make a hard link. Linux says EPERM for FAT32
+# and exFAT, which keep no link count at all, and a network or FUSE mount may say ENOTSUP or
+# EOPNOTSUPP (one value on Linux, two names) instead.
+_NO_HARD_LINKS = {errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP}
+
+
+def _no_clobber_refusal(path: Path) -> OutputExistsError:
+    return OutputExistsError(
+        f"{path.name} appeared while the signature was being made. Not overwriting it. Use "
+        "--overwrite if that is what you want.",
+        path=path,
+    )
+
+
+def _commit_without_clobber(tmp: Path, path: Path) -> None:
+    """Put the staging file at ``path`` without replacing anything already there.
+
+    ``os.link`` is the commit that needs no second step: the name is taken in one syscall or not
+    at all, so nothing can appear at ``path`` between a check and the write. It is also the
+    commit a FAT32 or exFAT stick cannot make. Those filesystems have no hard links, the kernel
+    answers EPERM, and a pendrive is an ordinary place to sign a document to. That answer used to
+    reach the user as a bare "Operation not permitted", after the PIN had been typed and the card
+    had signed, and nothing but ``--overwrite`` got past it.
+
+    On that errno, and on nothing else, the name is reserved with an exclusive create and the
+    staging file is renamed over the reservation. The reservation keeps the property that
+    matters, which is that a file already at ``path`` is never destroyed: the exclusive create
+    refuses anything present, a dangling symlink included, exactly as the link did. What it
+    cannot keep is the single syscall. Between the reservation and the rename, an entry swapped
+    into ``path`` would be renamed over. That window is one syscall wide, open only to somebody
+    who can already write to the directory, and on FAT there is no symlink to plant in it. The
+    same limit the replacing commit states: on a shared directory, want the sticky bit.
+
+    Anything else ``os.link`` raises is a different problem and propagates as it is. EPERM is not
+    only "no hard links here", it is also an immutable directory, and there the fallback fails on
+    the same directory with the same errno, which is the right answer either way.
+    """
+    try:
+        os.link(tmp, path)
+    except FileExistsError:
+        raise _no_clobber_refusal(path) from None
+    except OSError as exc:
+        if exc.errno not in _NO_HARD_LINKS:
+            raise
+    else:
+        tmp.unlink(missing_ok=True)
+        return
+
+    try:
+        reservation = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    except FileExistsError:
+        raise _no_clobber_refusal(path) from None
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        # An empty file under the output's name would make the next attempt refuse to sign over
+        # it, and could pass for the document. It goes, but only while it is still the file that
+        # was reserved: anything else at that name is not this function's to remove.
+        try:
+            if os.path.samestat(os.fstat(reservation), os.stat(path)):
+                os.unlink(path)
+        except OSError:
+            pass
+        raise
+    finally:
+        os.close(reservation)
+
+
 @contextmanager
 def _staged_output(path: Path, *, overwrite: bool = True):
     """Yield an open file beside ``path``, then atomically move it into place.
@@ -839,6 +907,9 @@ def _staged_output(path: Path, *, overwrite: bool = True):
     carry. Without that narrowing the staging file sat at 0644 for the whole signing operation
     while holding, for a PDF, essentially the entire document: unpredictable names stop somebody
     planting a file there, and do nothing about somebody watching the directory and reading one.
+    On a filesystem with no permission bits of its own, FAT32 and exFAT among them, the kernel
+    accepts the chmod and changes nothing, so there the staging file is exactly as private as
+    the directory it sits in, which is what everything else on that medium is too.
 
     **Atomic, and not through a symlink.** Both commits put a fully written file in place in one
     step and neither writes through a link pre-created at ``path``: ``os.replace`` puts the file
@@ -854,7 +925,9 @@ def _staged_output(path: Path, *, overwrite: bool = True):
     check is for a clear message before the card is touched; it cannot be the guarantee, because
     reading a certificate, entering a PIN and reaching a TSA all happen between it and the write,
     and anything appearing in that window used to be destroyed silently. ``os.link`` also refuses
-    a dangling symlink, which ``exists()`` reports as absent.
+    a dangling symlink, which ``exists()`` reports as absent. Where the filesystem cannot make a
+    hard link at all, the commit reserves the name instead: :func:`_commit_without_clobber` says
+    what that keeps and what it gives up.
 
     **Deliberate access control.** Overwriting preserves the replaced file's POSIX discretionary
     access control, meaning owner, group, mode and access ACL: four things, not merely the mode
@@ -898,15 +971,7 @@ def _staged_output(path: Path, *, overwrite: bool = True):
         if overwrite:
             os.replace(tmp, path)
         else:
-            try:
-                os.link(tmp, path)
-            except FileExistsError:
-                raise OutputExistsError(
-                    f"{path.name} appeared while the signature was being made. Not overwriting "
-                    "it. Use --overwrite if that is what you want.",
-                    path=path,
-                ) from None
-            tmp.unlink(missing_ok=True)
+            _commit_without_clobber(tmp, path)
 
         # Only now, when the bytes are already in place under the right name, does anyone other
         # than the owner get to read them. A failure here fails in the safe direction, leaving a

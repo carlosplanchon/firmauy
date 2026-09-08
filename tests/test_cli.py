@@ -1703,6 +1703,95 @@ def test_a_dangling_symlink_counts_as_occupied(tmp_path):
         _atomic_write_bytes(out, b"<signed/>", overwrite=False)
 
 
+def _no_hard_links(src, dst, *args, **kwargs):
+    """What link(2) answers on FAT32 and exFAT, which keep no link count at all."""
+    import errno
+
+    raise PermissionError(errno.EPERM, "Operation not permitted", str(src), None, str(dst))
+
+
+def test_a_filesystem_without_hard_links_still_commits_without_clobbering(tmp_path, monkeypatch):
+    """A pendrive is FAT32 or exFAT, neither has hard links, and os.link answers EPERM there. That
+    used to come back as a bare OSError after the PIN was typed and the card had signed, and only
+    --overwrite got past it. Made deterministic by refusing the link the way the kernel does."""
+    import os
+
+    from firmauy.signing import _atomic_write_bytes
+
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    out = tmp_path / "salida.xml"
+
+    _atomic_write_bytes(out, b"<signed/>", overwrite=False)
+
+    assert out.read_bytes() == b"<signed/>"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
+
+
+def test_the_fallback_commit_still_refuses_to_clobber(tmp_path, monkeypatch):
+    """Without a link, the reservation is what keeps the guarantee: an exclusive create fails on
+    anything already at the name, so what appeared mid-signing survives, as it does with one."""
+    import os
+
+    from firmauy.errors import OutputExistsError
+    from firmauy.signing import _staged_output
+
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    out = tmp_path / "salida.xml"
+
+    with pytest.raises(OutputExistsError):
+        with _staged_output(out, overwrite=False) as handle:
+            handle.write(b"<mine/>")
+            out.write_bytes(b"<from another process/>")
+
+    assert out.read_bytes() == b"<from another process/>"
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
+
+
+def test_a_failed_rename_takes_its_empty_reservation_with_it(tmp_path, monkeypatch):
+    """The reservation is an empty file under the output's name. Left behind, the next attempt
+    would refuse to sign over it, and it could pass for the document."""
+    import errno
+    import os
+
+    from firmauy.signing import _atomic_write_bytes
+
+    def disk_says_no(src, dst):
+        raise OSError(errno.EIO, "Input/output error")
+
+    monkeypatch.setattr(os, "link", _no_hard_links)
+    monkeypatch.setattr(os, "replace", disk_says_no)
+    out = tmp_path / "salida.xml"
+
+    with pytest.raises(OSError) as failure:
+        _atomic_write_bytes(out, b"<signed/>", overwrite=False)
+
+    assert failure.value.errno == errno.EIO
+    assert not out.exists()
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
+
+
+def test_any_other_link_failure_is_not_taken_for_a_missing_feature(tmp_path, monkeypatch):
+    """EACCES is the directory refusing, not the filesystem lacking links. It propagates as it
+    is, and nothing is created under the output's name on the way."""
+    import errno
+    import os
+
+    from firmauy.signing import _atomic_write_bytes
+
+    def directory_says_no(src, dst, *args, **kwargs):
+        raise PermissionError(errno.EACCES, "Permission denied")
+
+    monkeypatch.setattr(os, "link", directory_says_no)
+    out = tmp_path / "salida.xml"
+
+    with pytest.raises(PermissionError) as failure:
+        _atomic_write_bytes(out, b"<signed/>", overwrite=False)
+
+    assert failure.value.errno == errno.EACCES
+    assert not out.exists()
+    assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
+
+
 def test_the_file_is_still_private_at_the_moment_it_is_committed(tmp_path):
     """The narrowing used to be undone before the commit, so the staging file sat at its final,
     possibly world-readable mode for the instant between. Small window, real one, and "private

@@ -23,7 +23,6 @@ from typing import Callable, List, NamedTuple, Optional
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 import pkcs11
-import pkcs11.exceptions
 from cryptography import x509
 from pyhanko import stamp
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
@@ -49,13 +48,11 @@ from firmauy.cert_utils import (
 )
 from firmauy.errors import (
     CertificateNotValidError,
-    IncorrectPinError,
     OutputAccessControlError,
     OutputCommittedError,
     OutputExistsError,
     PostSignVerificationError,
     PinError,
-    PinLockedError,
 )
 from firmauy.constants import (
     DEFAULT_IMAGE_OPACITY,
@@ -68,9 +65,12 @@ from firmauy.constants import (
 from firmauy.pkcs11_utils import (
     cert_is_expired,
     cert_not_yet_valid,
+    check_certificate_before_login,
+    check_pin_status,
     find_token,
     get_private_key,
     load_pkcs11_lib,
+    login_session,
     normalize_cert_id_hex,
     select_certificate,
 )
@@ -191,11 +191,14 @@ def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin=No
     the caller's job. Callers keep their own (fail-fast, pre-PIN) validation and timestamper build.
 
     The PIN arrives as ``pin`` (direct) or ``pin_provider`` (a zero-arg callable invoked only once
-    the backend has checked what it can without a PIN). The native backend reads and checks the
-    certificate first. The PKCS#11 backend only loads the module and finds the token first, and
-    chooses the certificate after login. ``notify``, when given, receives the informational lines
-    as they occur (backend-option notes pre-flight, then the certificate-selection warnings).
-    Without it they are dropped. The --cert-id/--native hard error is always raised."""
+    the backend has checked what it can without a PIN). Both backends check the certificate and the
+    PIN's state first. The native one reads the certificate from the card and probes its retry
+    counter. The PKCS#11 one reads what the token shows without login and the PIN state the token
+    reports, then chooses among the certificates after login, when their private keys are
+    visible. ``notify``, when given, receives
+    the informational lines as they occur (backend-option notes pre-flight, then the
+    certificate-selection warnings). Without it they are dropped. The --cert-id/--native hard error
+    is always raised."""
     _check_backend_options(
         native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
         cert_id=cert_id, notify=notify,
@@ -218,55 +221,52 @@ def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin=None, pin_p
     yield the context (display fields included, nothing printed). The session is closed on exit.
     ``notify`` receives the certificate-selection warnings (skipped candidates).
 
-    The certificate is selected after login, unlike on the native path: ``select_certificate``
-    pairs each certificate with its private key, and private keys are only visible in a logged-in
-    session. So an expired certificate or an unknown --cert-id surfaces after the PIN is entered.
-    A malformed --cert-id, a module that does not load and a missing token still fail before it."""
+    Before the PIN is asked for, the certificates the token shows without login are checked (see
+    ``check_certificate_before_login``), and a PIN the token reports as locked or on its last try
+    is refused (``check_pin_status``). So an expired certificate, an unknown --cert-id or a PIN
+    about to lock fails before the PIN is typed, as on the native path. Pairing the certificate
+    with its private key still happens after login, the only place private keys are visible."""
     # Validate the hex cert ID up front: a malformed --cert-id must fail before the PIN is obtained
     # (an incorrect PIN counts toward the card's retry limit), not later inside select_certificate.
     if cert_id is not None:
         normalize_cert_id_hex(cert_id)
     lib = load_pkcs11_lib(pkcs11_lib)
     token = find_token(lib, token_label)
+    # The certificate first, since no PIN fixes an expired one, then the PIN's own state.
+    check_certificate_before_login(token, cert_id)
+    check_pin_status(token)
     final_pin = _resolve_final_pin(pin, pin_provider)
-    # Translate the middleware's PIN exceptions into the domain ones (same messages the CLI's
-    # _format_error historically produced), so API consumers can catch IncorrectPinError /
-    # PinLockedError regardless of backend. The middleware does not report remaining attempts.
-    try:
-        with token.open(user_pin=final_pin) as session:
-            key_id, cert = select_certificate(session, cert_id, notify=notify)
-            signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
-            yield _SigningContext(
-                cert=cert, signer_name=signer_name, issuer_name=issuer_name,
-                cert_serial=cert_serial,
-                source_caption="Token",
-                source_display=(getattr(token, "label", "") or "").strip() or "<no label>",
-                key_id=key_id,
-                pyhanko_signer_factory=lambda: PKCS11Signer(
-                    pkcs11_session=session, cert_id=key_id, key_id=key_id),
-                raw_signer_factory=lambda: _make_raw_signer(session, key_id),
-            )
-    except pkcs11.exceptions.PinIncorrect as exc:
-        raise IncorrectPinError("Incorrect PIN.") from exc
-    except pkcs11.exceptions.PinLocked as exc:
-        raise PinLockedError("The PIN is locked (too many incorrect attempts).") from exc
+    with login_session(token, final_pin) as session:
+        key_id, cert = select_certificate(session, cert_id, notify=notify)
+        signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
+        yield _SigningContext(
+            cert=cert, signer_name=signer_name, issuer_name=issuer_name,
+            cert_serial=cert_serial,
+            source_caption="Token",
+            source_display=(getattr(token, "label", "") or "").strip() or "<no label>",
+            key_id=key_id,
+            pyhanko_signer_factory=lambda: PKCS11Signer(
+                pkcs11_session=session, cert_id=key_id, key_id=key_id),
+            raw_signer_factory=lambda: _make_raw_signer(session, key_id),
+        )
 
 
 @contextmanager
 def _native_signing_session(*, reader, pin=None, pin_provider=None):
     """Native PC/SC backend: open the reader, select the applet, read the public signing certificate,
-    verify the PIN and yield the context (display fields included, nothing printed). No PKCS#11
-    module is loaded. The connection is closed on exit. Do not run while a PKCS#11 sign session is
-    open on the same card: both go through pcscd and will conflict.
+    probe the PIN retry counter, verify the PIN and yield the context (display fields included,
+    nothing printed). No PKCS#11 module is loaded. The connection is closed on exit. Do not run
+    while a PKCS#11 sign session is open on the same card: both go through pcscd and will conflict.
 
     The PIN (direct ``pin`` or lazy ``pin_provider``) is obtained only after the PIN-free
-    certificate read, preserving the retry-limit guard."""
+    certificate read and retry-counter probe, so a bad certificate, a blocked PIN or one on its
+    last try is refused before it is asked for."""
     from firmauy import native_card
     with _card_connection(reader) as conn:
         select_applet(conn)
         cert = native_card.read_signing_certificate(conn)
-        # Same validity guard the PKCS#11 path gets from select_certificate: never sign with an
-        # expired / not-yet-valid certificate, and fail before the PIN is obtained.
+        # The same validity guard the PKCS#11 path runs before its PIN: never sign with an expired
+        # or not-yet-valid certificate, and fail before the PIN is obtained.
         if cert_is_expired(cert) or cert_not_yet_valid(cert):
             if cert_is_expired(cert):
                 reason = f"expired (valid until {cert_not_after(cert)})"
@@ -276,8 +276,11 @@ def _native_signing_session(*, reader, pin=None, pin_provider=None):
                 f"The card's signing certificate is {reason}: {get_common_name(cert.subject)}"
             )
         signer_name, issuer_name, cert_serial = _cert_display_fields(cert)
-        # Obtain the PIN only after the (PIN-free) cert read succeeds, so a reader/card problem
-        # surfaces before the PIN is requested. verify_pin refuses to spend the card's last retry.
+        # The PIN's state before the PIN itself, as on the PKCS#11 path: a blocked PIN, one on its
+        # last try or a counter the card will not report is refused before the PIN is requested,
+        # so no PIN dialog is shown for an answer that could only lock the card. verify_pin probes
+        # again right before the PIN is sent.
+        native_card.check_pin_status(conn)
         final_pin = _resolve_final_pin(pin, pin_provider)
         native_card.verify_pin(conn, final_pin)
         # The pyHanko signer is built lazily through the factory (honoring _SigningContext's

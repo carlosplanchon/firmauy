@@ -2,6 +2,7 @@
 # Licensed under the Apache License, Version 2.0
 
 import re
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Iterable, Optional
@@ -14,9 +15,15 @@ from firmauy.cert_utils import cert_not_after, cert_not_before, get_common_name
 from firmauy.errors import (
     CertificateNotFoundError,
     CertificateNotValidError,
+    IncorrectPinError,
+    PinError,
+    PinLockedError,
     SigningKeyNotFoundError,
     TokenNotFoundError,
 )
+
+# One certificate as the token lists it: its PKCS#11 object ID and the parsed certificate.
+CertEntry = tuple[bytes, x509.Certificate]
 
 
 def load_pkcs11_lib(pkcs11_lib: str) -> pkcs11.lib:
@@ -126,49 +133,56 @@ def has_private_key(session: pkcs11.Session, key_id: bytes) -> bool:
     return len(keys) > 0
 
 
-def select_certificate(
-    session: pkcs11.Session, cert_id_hex: Optional[str],
-    notify: Optional[Callable[[str], None]] = None,
-) -> tuple[bytes, x509.Certificate]:
-    """Select the best signing certificate from the token.
+def read_certificates(session: pkcs11.Session) -> tuple[list[CertEntry], int]:
+    """Every certificate the session can see, and how many objects could not be read.
 
-    If cert_id_hex is given, filters to that specific certificate ID.
-    Otherwise, scores all available certificates and returns the one most
-    likely to be a cédula identity certificate. Expired certificates are
-    excluded; if all candidates are expired an error is raised.
-
-    ``notify``, when given, receives the skipped-candidate warning lines (certificates without a
-    private key, expired ones); without it they are dropped.
+    An object whose ID or value cannot be read, or whose value does not parse, is skipped and
+    counted. Skipping is what selection always did. The count is for the check before login, which
+    must not mistake a certificate it failed to read for one that is not there.
     """
-    wanted_id = bytes.fromhex(normalize_cert_id_hex(cert_id_hex)) if cert_id_hex else None
-    cert_candidates: list[tuple[bytes, x509.Certificate]] = []
-    unusable_candidates: list[tuple[bytes, x509.Certificate]] = []   # expired or not yet valid
-
+    certs: list[CertEntry] = []
+    unreadable = 0
     for cert_obj in iter_cert_objects(session):
         try:
             obj_id = cert_obj[pkcs11.Attribute.ID]
-            cert_der = cert_obj[pkcs11.Attribute.VALUE]
-            cert = x509.load_der_x509_certificate(cert_der)
+            cert = x509.load_der_x509_certificate(cert_obj[pkcs11.Attribute.VALUE])
         except Exception:
+            unreadable += 1
             continue
+        certs.append((obj_id, cert))
+    return certs, unreadable
 
+
+def usable_certificates(
+    certs: Iterable[CertEntry], cert_id_hex: Optional[str],
+) -> tuple[list[CertEntry], list[CertEntry]]:
+    """``(valid, unusable)``: the certificates valid now, and the ones expired or not yet valid,
+    keeping only the ``cert_id_hex`` one when it is given.
+
+    Raises CertificateNotFoundError when nothing is left and CertificateNotValidError when all that
+    is left is outside its validity window. Neither check needs a private key, which is why they are
+    apart from the rest of select_certificate: they can run before the PIN.
+    """
+    wanted_id = bytes.fromhex(normalize_cert_id_hex(cert_id_hex)) if cert_id_hex else None
+    valid: list[CertEntry] = []
+    unusable: list[CertEntry] = []
+    for obj_id, cert in certs:
         if wanted_id is not None and obj_id != wanted_id:
             continue
-
         if cert_is_expired(cert) or cert_not_yet_valid(cert):
-            unusable_candidates.append((obj_id, cert))
+            unusable.append((obj_id, cert))
         else:
-            cert_candidates.append((obj_id, cert))
+            valid.append((obj_id, cert))
 
-    if not cert_candidates and not unusable_candidates:
+    if not valid and not unusable:
         if cert_id_hex:
             raise CertificateNotFoundError(
                 f"No certificate found with ID {cert_id_hex} in the token."
             )
         raise CertificateNotFoundError("No usable certificates found in the token.")
 
-    if not cert_candidates:
-        cert = unusable_candidates[0][1]
+    if not valid:
+        cert = unusable[0][1]
         cn = get_common_name(cert.subject)
         if cert_is_expired(cert):
             reason = f"expired (valid until {cert_not_after(cert)})"
@@ -178,6 +192,88 @@ def select_certificate(
             f"Selected certificate is {reason}: {cn}\n"
             "No valid certificates found in the token."
         )
+    return valid, unusable
+
+
+def check_certificate_before_login(token: pkcs11.Token, cert_id_hex: Optional[str]) -> None:
+    """Run the certificate checks that need no private key, before the PIN is asked for.
+
+    select_certificate needs a logged-in session, because it pairs each certificate with its
+    private key and private keys only appear after login. Whether the certificate exists and is
+    valid needs no login: certificates are public objects on the cédula, with the official
+    middleware and with OpenSC alike. Checking them here means an expired certificate or an unknown
+    --cert-id fails before the PIN is typed, as on the native path. Checked after it, a mistyped PIN
+    would spend one of the card's tries and be reported as the only problem.
+
+    A token that shows no certificate without login, a certificate that cannot be read, or a module
+    error proves nothing, so the checks then wait for the login, as they always did. Passing proves
+    nothing either: login can only add private objects, and select_certificate still decides. The
+    one setup this refuses early that login would have rescued is a token that shows some
+    certificates and keeps the wanted one private, which no known cédula stack does.
+    """
+    try:
+        with token.open() as session:
+            certs, unreadable = read_certificates(session)
+    except pkcs11.exceptions.PKCS11Error:
+        return
+    # Outside the try: closing the session can fail as well, and that failure must neither replace
+    # a domain error raised here nor be taken for one.
+    if certs and not unreadable:
+        usable_certificates(certs, cert_id_hex)
+
+
+def check_pin_status(token: pkcs11.Token) -> None:
+    """Refuse before the PIN is asked for when the token reports the PIN as locked, or on its last
+    try, as the native path's verify_pin does from the card's own counter.
+
+    The flags are what the module reported when find_token got the token (C_GetTokenInfo), and
+    reporting them is up to the module. OpenSC does for the cédula. A module that does not sets
+    neither flag, which leaves the PIN path as it was. USER_PIN_COUNT_LOW only says a wrong PIN was
+    entered since the last good one, which is no reason to refuse.
+    """
+    flags = token.flags
+    if flags & pkcs11.TokenFlag.USER_PIN_LOCKED:
+        raise PinLockedError("The PIN is locked (too many incorrect attempts).")
+    if flags & pkcs11.TokenFlag.USER_PIN_FINAL_TRY:
+        raise PinError(
+            "Only 1 PIN try left: aborting for safety. Unblock the cédula before retrying."
+        )
+
+
+@contextmanager
+def login_session(token: pkcs11.Token, pin: Optional[str]):
+    """``token.open(user_pin=pin)``, with the module's PIN exceptions turned into firmauy's.
+
+    Every PKCS#11 login goes through here, so a wrong or locked PIN reaches the caller as
+    IncorrectPinError or PinLockedError whichever command logged in, as on the native path. The
+    module does not report the remaining tries, so IncorrectPinError carries none. Without a PIN
+    this opens a session with no login and translates nothing.
+    """
+    try:
+        with token.open(user_pin=pin) as session:
+            yield session
+    except pkcs11.exceptions.PinIncorrect as exc:
+        raise IncorrectPinError("Incorrect PIN.") from exc
+    except pkcs11.exceptions.PinLocked as exc:
+        raise PinLockedError("The PIN is locked (too many incorrect attempts).") from exc
+
+
+def select_certificate(
+    session: pkcs11.Session, cert_id_hex: Optional[str],
+    notify: Optional[Callable[[str], None]] = None,
+) -> tuple[bytes, x509.Certificate]:
+    """Select the best signing certificate from the token.
+
+    If cert_id_hex is given, filters to that specific certificate ID.
+    Otherwise, scores all available certificates and returns the one most
+    likely to be a cédula identity certificate. Expired certificates are
+    excluded, and if all candidates are expired an error is raised.
+
+    ``notify``, when given, receives the skipped-candidate warning lines (certificates without a
+    private key, expired ones). Without it they are dropped.
+    """
+    certs, _ = read_certificates(session)
+    cert_candidates, unusable_candidates = usable_certificates(certs, cert_id_hex)
 
     no_key_candidates: list[tuple[bytes, x509.Certificate]] = []
     valid_candidates: list[tuple[bytes, x509.Certificate]] = []

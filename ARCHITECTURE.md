@@ -74,16 +74,19 @@ limited retries, so the session is arranged to make that as unlikely as possible
 1. Pre-flight checks run first, with no reader or PIN access (a hard error for `cert_id` with
    native, notes for options that do not apply).
 2. What can be checked without a PIN is checked. The native path reads the signing certificate
-   and rejects an expired or not-yet-valid one. The PKCS#11 path loads the module and finds the
-   token, but chooses the certificate only after login, because pairing a certificate with its
-   private key needs the PIN session. So a certificate problem surfaces before the PIN on the
-   native path and after it on PKCS#11.
+   and rejects an expired or not-yet-valid one, then probes the retry counter and refuses a blocked
+   PIN, one on its last try, or a counter the card will not report. The PKCS#11 path runs the same
+   certificate checks on the certificates the token shows without login, which on the cédula
+   includes the signing certificate (a token that shows none gets them after login instead), and
+   refuses a PIN the token reports as locked or on its last try. Pairing a certificate with its
+   private key needs the PIN session, so only that part waits for the login.
 3. Only then is the PIN resolved: a direct `pin` string, or a lazy `pin_provider()` callback
    invoked at this exact point. The CLI wraps its whole `--pin-source` handling in one provider.
    A GUI can open its PIN dialog here, knowing the card is ready.
 4. A PIN that is empty, not all digits, or not 4 to 8 digits long is refused before touching the
-   card. On the native path, `verify_pin` probes the retry counter first and refuses to spend the
-   last try. The PKCS#11 path has no such guard.
+   card. On the native path, `verify_pin` probes the retry counter again right before the PIN is
+   sent, so it refuses to spend the last try even when called on its own. On PKCS#11 the refusal of
+   step 2 depends on the module reporting the PIN flags. OpenSC reports them for the cédula.
 
 The PIN is never placed in argv, results, logs or exception messages.
 
@@ -95,9 +98,10 @@ meaningfully branch on: reader/card presence, PIN outcomes (`IncorrectPinError` 
 
 Two deliberate rules:
 
-- Every domain error also inherits the built-in the engine historically raised (`RuntimeError`),
-  so broad handlers and older callers keep working. The PKCS#11 session translates the
-  middleware's own PIN exceptions into these types, making both backends raise identically.
+- Domain errors derive from `FirmaUYError` alone. Until 1.8.0 they also inherited `RuntimeError`,
+  which let a broad `except RuntimeError` catch environment problems and domain conditions alike.
+  Every PKCS#11 login translates the middleware's own PIN exceptions into these types, making both
+  backends raise identically.
 - Environment problems (pcscd down, PKCS#11 module missing, ambiguous reader choice) stay plain
   `RuntimeError` with actionable messages. `run_doctor` / `firmauy doctor` is the structured way
   to diagnose the environment, not the exception hierarchy.

@@ -279,8 +279,8 @@ firmauy sign-pdf documento.pdf --pin-source fd --pin-fd 3 3< pin.txt
 
 > ⚠️ **A wrong PIN in automation can lock the cédula.** Each incorrect attempt counts toward the
 > card's retry limit, and a bad PIN in a script is re-sent on every run, so double-check it before
-> unattended use. `--native` refuses to spend the card's last try. The default PKCS#11 path does
-> not, and firmauy cannot unblock a locked PIN.
+> unattended use. `--native` refuses to spend the card's last try, and the default PKCS#11 path
+> does too when its module reports the PIN state (OpenSC does). firmauy cannot unblock a locked PIN.
 
 ## Nushell
 

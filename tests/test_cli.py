@@ -7,6 +7,7 @@ from importlib.metadata import version
 
 from unittest import mock
 
+import pkcs11
 import pytest
 
 from asn1crypto import keys as asn1keys
@@ -34,6 +35,7 @@ from firmauy.verify_common import Check, VerifyResult
 
 import firmauy.cli as cli
 import firmauy.signing as signing
+from firmauy.errors import PinError, PinLockedError
 
 runner = CliRunner()
 
@@ -1263,13 +1265,45 @@ class _FakeCert:
     serial_number = 0x1A
 
 
+class _FakeSession:
+    """A session showing the given ``(id, certificate)`` pairs as certificate objects. None by
+    default, so the certificate check before login concludes nothing and a test reaches the
+    (patched) select_certificate as before."""
+
+    def __init__(self, certs=()):
+        self.certs = certs
+
+    def get_objects(self, attrs=None):
+        return iter([{pkcs11.Attribute.ID: obj_id,
+                      pkcs11.Attribute.VALUE: cert.public_bytes(serialization.Encoding.DER)}
+                     for obj_id, cert in self.certs])
+
+
 class _FakeToken:
+    """A token that reports ``flags`` as its PIN state, shows ``certs`` in every session, fails a
+    login with ``login_error`` when given, and records the PIN of each session it opens (None for
+    a session without login)."""
+
     label = "tok"
 
+    def __init__(self, *, certs=(), flags=pkcs11.TokenFlag(0), login_error=None):
+        self.certs = certs
+        self.flags = flags
+        self.login_error = login_error
+        self.logins = []
+
     def open(self, user_pin=None):
+        self.logins.append(user_pin)
+        token = self
+
         class _Ctx:
-            def __enter__(self_): return object()      # the session
-            def __exit__(self_, *a): return False
+            def __enter__(self_):
+                if user_pin is not None and token.login_error is not None:
+                    raise token.login_error
+                return _FakeSession(token.certs)
+
+            def __exit__(self_, *a):
+                return False
         return _Ctx()
 
 
@@ -1458,6 +1492,123 @@ def test_signing_session_notes_backend_mismatched_options(monkeypatch):
     with cli._signing_session(native=False, reader="ACS ACR39U 00 00", pkcs11_lib="lib.so",
                               token_label=None, cert_id=None, pin="1234"):
         pass
+
+
+def _pkcs11_session(**kwargs):
+    return signing._signing_session(native=False, reader=None, pkcs11_lib="lib.so",
+                                    token_label=None, cert_id=None, **kwargs)
+
+
+@pytest.mark.parametrize("flags, error", [
+    (pkcs11.TokenFlag.USER_PIN_LOCKED, PinLockedError),
+    (pkcs11.TokenFlag.USER_PIN_FINAL_TRY, PinError),
+], ids=["locked", "final-try"])
+def test_pkcs11_session_refuses_the_pin_state_the_token_reports_before_asking(
+        monkeypatch, flags, error):
+    # The PKCS#11 counterpart of native verify_pin's guard, and earlier than it: the PIN is not
+    # even asked for, so a GUI never shows a dialog whose answer could only lock the card.
+    token = _FakeToken(flags=flags)
+    monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(signing, "find_token", lambda lib, label: token)
+    asked = []
+
+    with pytest.raises(error) as exc:
+        with _pkcs11_session(pin_provider=lambda: asked.append(1) or "1234"):
+            pass
+
+    assert type(exc.value) is error
+    assert asked == []
+    assert token.logins == [None]         # the certificate check's session, never a login
+
+
+def test_pkcs11_session_asks_once_when_the_count_is_only_low(monkeypatch):
+    # USER_PIN_COUNT_LOW means a wrong PIN was entered since the last good one. That is no reason
+    # to refuse, and SoftHSM sets it after any wrong PIN.
+    token = _FakeToken(flags=pkcs11.TokenFlag.USER_PIN_COUNT_LOW)
+    monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(signing, "find_token", lambda lib, label: token)
+    monkeypatch.setattr(signing, "select_certificate",
+                        lambda session, cid, notify=None: (b"\x01", _FakeCert()))
+    monkeypatch.setattr(signing, "get_common_name", lambda name: "SIGNER")
+    monkeypatch.setattr(signing, "normalize_issuer_name", lambda s: "ISSUER")
+    asked = []
+
+    with _pkcs11_session(pin_provider=lambda: asked.append(1) or "1234"):
+        pass
+
+    assert asked == [1]
+    assert token.logins == [None, "1234"]
+
+
+@pytest.mark.parametrize("cert_fixture, cert_id, code", [
+    ("cert_expired", None, "certificate_not_valid"),
+    ("cert_valid", "02", "certificate_not_found"),
+], ids=["expired", "unknown-cert-id"])
+def test_cli_pkcs11_rejects_a_certificate_problem_before_the_pin(
+        monkeypatch, tmp_path, request, cert_fixture, cert_id, code):
+    # The PKCS#11 counterpart of test_cli_native_rejects_expired_certificate. The token shows its
+    # certificate without login, as the cédula does with both middlewares, so the problem is found
+    # before the PIN is read, where a mistyped PIN would have spent a try and hidden it.
+    token = _FakeToken(certs=[(b"\x01", request.getfixturevalue(cert_fixture))])
+    monkeypatch.setattr(signing, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(signing, "find_token", lambda lib, label: token)
+
+    def _no_pin(*a, **k):
+        raise AssertionError("the PIN must not be requested for a certificate problem")
+    monkeypatch.setattr(cli, "get_pin", _no_pin)
+
+    src = tmp_path / "data.bin"
+    src.write_bytes(b"payload")
+    args = ["sign-any", str(src), str(tmp_path / "data.bin.p7s"), "--json"]
+    if cert_id:
+        args += ["--cert-id", cert_id]
+    r = runner.invoke(app, args)
+
+    assert r.exit_code == 1
+    assert json.loads(r.stdout)["error_code"] == code
+    assert token.logins == [None]
+
+
+def _list_certs_with(monkeypatch, token, *args):
+    monkeypatch.setattr(cli, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(cli, "find_token", lambda lib, label: token)
+    return runner.invoke(app, ["list-certs", "--json", *args])
+
+
+def test_list_certs_with_a_pin_refuses_the_final_try(monkeypatch):
+    token = _FakeToken(flags=pkcs11.TokenFlag.USER_PIN_FINAL_TRY)
+
+    def _no_pin(*a, **k):
+        raise AssertionError("the PIN must not be read when the token is on its last try")
+    monkeypatch.setattr(cli, "get_pin", _no_pin)
+
+    r = _list_certs_with(monkeypatch, token, "--pin-source", "stdin")
+
+    assert r.exit_code == 1
+    assert json.loads(r.stdout)["error_code"] == "pin_error"
+    assert token.logins == []
+
+
+def test_list_certs_without_a_pin_ignores_the_pin_state(monkeypatch, cert_valid):
+    # Without a PIN nothing logs in, so a locked PIN is no reason not to list public certificates.
+    token = _FakeToken(certs=[(b"\x01", cert_valid)], flags=pkcs11.TokenFlag.USER_PIN_LOCKED)
+
+    r = _list_certs_with(monkeypatch, token)
+
+    assert r.exit_code == 0, r.output
+    assert len(json.loads(r.stdout)["certificates"]) == 1
+    assert token.logins == [None]
+
+
+def test_list_certs_reports_a_wrong_pin_as_incorrect_pin(monkeypatch):
+    # Before, the module's own PinIncorrect escaped untranslated, and --json said operation_failed.
+    token = _FakeToken(login_error=pkcs11.exceptions.PinIncorrect())
+    monkeypatch.setattr(cli, "get_pin", lambda *a, **k: "1234")
+
+    r = _list_certs_with(monkeypatch, token, "--pin-source", "stdin")
+
+    assert r.exit_code == 1
+    assert json.loads(r.stdout)["error_code"] == "incorrect_pin"
 
 
 class _FakeHybridWriter:

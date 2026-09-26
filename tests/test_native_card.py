@@ -17,7 +17,8 @@ from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import NameOID
 
 from firmauy import native_card
-from firmauy.native_card import _ALGO_HASH, sign_message, verify_pin
+from firmauy.errors import PinError, PinLockedError
+from firmauy.native_card import _ALGO_HASH, check_pin_status, sign_message, verify_pin
 
 # APDU headers from docs/card-protocol.md.
 MSE_SET_DST = [0x00, 0x22, 0x41, 0xB6, 0x06, 0x80, 0x01, 0x42, 0x84, 0x01, 0x01]
@@ -212,6 +213,87 @@ def test_verify_pin_unknown_probe_status_fails_closed():
     with pytest.raises(RuntimeError, match="status probe"):
         verify_pin(conn, "1234")
     assert conn.log == [[0x00, 0x20, 0x00, 0x11]]        # only the probe; no PIN ever transmitted
+
+
+PIN_PROBE = [0x00, 0x20, 0x00, 0x11]      # the status-only VERIFY: consumes no try
+
+
+def test_check_pin_status_returns_the_tries_left():
+    conn = FakeConn(pin_status=(0x63, 0x03))
+    assert check_pin_status(conn) == 3
+    assert conn.log == [PIN_PROBE]
+
+
+def _native_session(monkeypatch, conn, **kwargs):
+    from firmauy import signing
+
+    monkeypatch.setattr(signing, "open_reader", lambda reader=None: conn)
+    monkeypatch.setattr(signing, "select_applet", lambda c: None)
+    monkeypatch.setattr(native_card, "read_signing_certificate", lambda c: _make_cert())
+    return signing._signing_session(native=True, reader=None, pkcs11_lib=None, token_label=None,
+                                    cert_id=None, **kwargs)
+
+
+@pytest.mark.parametrize("pin_status, error, match", [
+    ((0x69, 0x83), PinLockedError, "blocked"),
+    ((0x63, 0x01), PinError, "try left"),
+    ((0x67, 0x00), RuntimeError, "status probe"),
+], ids=["blocked", "last-try", "unknown-counter"])
+def test_native_session_refuses_the_pin_state_before_asking(
+        monkeypatch, pin_status, error, match):
+    # verify_pin found these too, but after pin_provider had run: a GUI opened its PIN dialog and
+    # then refused whatever was typed in it.
+    conn = FakeConn(pin_status=pin_status)
+    asked = []
+
+    with pytest.raises(error, match=match) as exc:
+        with _native_session(monkeypatch, conn, pin_provider=lambda: asked.append(1) or "1234"):
+            pass
+
+    assert type(exc.value) is error
+    assert asked == []
+    assert [a for a in conn.log if a != "disconnect"] == [PIN_PROBE]    # no PIN ever sent
+    assert "disconnect" in conn.log
+
+
+def test_native_session_asks_once_and_probes_again_before_sending_the_pin(monkeypatch):
+    conn = FakeConn(pin_status=(0x63, 0x03))
+    asked = []
+
+    with _native_session(monkeypatch, conn, pin_provider=lambda: asked.append(1) or "1234"):
+        pass
+
+    assert asked == [1]
+    apdus = [a for a in conn.log if a != "disconnect"]
+    assert apdus[:2] == [PIN_PROBE, PIN_PROBE]      # before asking, and right before sending
+    assert apdus[2][:5] == PIN_PROBE + [0x0C]       # then the PIN itself
+
+
+def test_cli_native_refuses_the_last_try_before_reading_the_pin(monkeypatch, tmp_path):
+    import json
+
+    from typer.testing import CliRunner
+
+    from firmauy import cli, signing
+    from firmauy.cli import app
+
+    conn = FakeConn(pin_status=(0x63, 0x01))
+    monkeypatch.setattr(signing, "open_reader", lambda reader=None: conn)
+    monkeypatch.setattr(signing, "select_applet", lambda c: None)
+    monkeypatch.setattr(native_card, "read_signing_certificate", lambda c: _make_cert())
+
+    def _no_pin(*a, **k):
+        raise AssertionError("the PIN must not be read when the card is on its last try")
+    monkeypatch.setattr(cli, "get_pin", _no_pin)
+
+    src = tmp_path / "data.bin"
+    src.write_bytes(b"payload")
+    r = CliRunner().invoke(app, ["sign-any", str(src), str(tmp_path / "data.bin.p7s"),
+                                 "--native", "--json"])
+
+    assert r.exit_code == 1
+    assert json.loads(r.stdout)["error_code"] == "pin_error"
+    assert [a for a in conn.log if a != "disconnect"] == [PIN_PROBE]
 
 
 # ── certificate + pyHanko adapter ───────────────────────────────────────────────

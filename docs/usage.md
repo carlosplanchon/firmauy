@@ -391,9 +391,10 @@ Choose the source by security context (most to least contained):
 > enough wrong attempts **lock the PIN**. This is riskiest in automation, where a wrong PIN in `env`,
 > `stdin` or `fd` is re-sent on **every run** and can lock the cédula unattended, so double-check the
 > value before wiring it in. `--native` reads the retry counter and **refuses to spend the card's
-> last try** (it aborts instead). The default PKCS#11 path relies on the middleware and does **not**
-> get that guard, so there a wrong PIN counts toward the limit like any other client. firmauy reports
-> a locked PIN but cannot unblock it.
+> last try** (it aborts before asking for the PIN). The default PKCS#11 path refuses too when the PKCS#11 module reports
+> the PIN on its last try, which OpenSC does. With a module that does not report it there is no such
+> guard, and a wrong PIN counts toward the limit like any other client. firmauy reports a locked PIN
+> but cannot unblock it.
 
 ### Native signing (no PKCS#11 middleware)
 

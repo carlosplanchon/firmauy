@@ -455,11 +455,13 @@ def sign_file(
     :class:`CardNotFoundError`, :class:`OutputExistsError`, ...) so a caller can branch on them.
 
     Supply the card's User PIN as ``pin`` (a string, directly) or as ``pin_provider`` (a zero-arg
-    callable invoked only when the PIN is actually needed, i.e. once the reader and card check out,
-    so a GUI can prompt on demand). Exactly one of the two is required. Either way a reader or card
-    problem cannot spend a card retry. The native backend also reads and checks the certificate
-    before the PIN. The PKCS#11 backend chooses it after login, so a certificate problem there
-    surfaces only after the PIN is entered.
+    callable invoked only when the PIN is actually needed, i.e. once the reader, card and
+    certificate check out, so a GUI can prompt on demand). Exactly one of the two is required.
+    Either way a broken setup cannot spend a card retry. Both backends refuse a locked PIN or one on
+    its last try before asking for it, native from the card's counter and PKCS#11 when the module
+    reports it. The PKCS#11 backend checks the certificate the token shows without login, as the
+    cédula's does. A certificate without a private key still surfaces after the PIN there, since
+    private keys are only visible after login.
 
     ``native`` defaults to True (the PC/SC backend the desktop app uses), where ``reader`` picks a
     PC/SC reader. Set it False for a PKCS#11 module: ``pkcs11_lib`` is the module path (the bundled
@@ -471,7 +473,9 @@ def sign_file(
 
     .. versionchanged:: 1.18.0
        ``allow_private_network`` was added, and the TSA request goes through the outbound
-       policy.
+       policy. A locked PIN and a PIN on its last try are raised before ``pin_provider`` runs,
+       with either backend, and with PKCS#11 so are an expired certificate and an unknown
+       ``cert_id``. They used to surface after it.
     """
     from firmauy.signing import (
         _build_timestamper,
@@ -1139,20 +1143,36 @@ def list_certs(
     only the matching certificate. ``pin`` logs in when the token hides its certificates behind one
     (most cédula tokens do not). ``include_pem`` adds the PEM to each result. Returns a list of
     :class:`CertInfo`.
+
+    With ``pin``, the login is refused before it is attempted when the token reports the PIN as
+    locked (:class:`PinLockedError`) or on its last try (:class:`PinError`), and a wrong PIN raises
+    :class:`IncorrectPinError`, as when signing.
+
+    .. versionchanged:: 1.18.0
+       The PIN state is checked before the login, and the module's own PIN exceptions no longer
+       escape untranslated.
     """
     import pkcs11
     from cryptography import x509
 
     from firmauy.cert_utils import _cert_record
     from firmauy.constants import DEFAULT_PKCS11_LIB
-    from firmauy.pkcs11_utils import find_token, iter_cert_objects, load_pkcs11_lib
+    from firmauy.pkcs11_utils import (
+        check_pin_status,
+        find_token,
+        iter_cert_objects,
+        load_pkcs11_lib,
+        login_session,
+    )
 
     lib = load_pkcs11_lib(str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB)
     token = find_token(lib, token_label)
+    if pin is not None:
+        check_pin_status(token)
     wanted = cert_id.lower().replace(":", "").replace(" ", "") if cert_id else None
 
     out: list[CertInfo] = []
-    with token.open(user_pin=pin) as session:
+    with login_session(token, pin) as session:
         for cert_obj in iter_cert_objects(session):
             try:
                 obj_id = cert_obj[pkcs11.Attribute.ID].hex()

@@ -208,11 +208,13 @@ print(report.kind, "->", report.output_path)   # pades -> contract_firmado.pdf
 print(verify(report.output_path).indication)   # VALID
 ```
 
-The `pin_provider` callback runs only after the reader and card check out, so a missing reader or
-card never costs a PIN try. On the native path (the API default, `--native` on the CLI) the signing
-certificate is read and checked before it as well. On the PKCS#11 path (the CLI default) the
-certificate is chosen after login, because pairing it with its private key needs the PIN session,
-so a certificate problem shows up only after the PIN is entered. Domain conditions raise typed exceptions: a wrong PIN is
+The `pin_provider` callback runs only after the reader, card and certificate check out, so a broken
+setup never costs a PIN try. The native path (the API default, `--native` on the CLI) reads the
+certificate from the card. The PKCS#11 path (the CLI default) reads what the token shows without
+login, which on the cédula includes the signing certificate, and pairs it with its private key after
+login, so a certificate without a key still shows up only after the PIN. Both refuse, before the PIN
+is even asked for, to spend the card's last PIN try: native reads the card's counter, PKCS#11 relies
+on the module reporting it (OpenSC does). Domain conditions raise typed exceptions: a wrong PIN is
 `IncorrectPinError` (carrying `attempts_remaining` on the native path), a locked card is
 `PinLockedError`, an existing output is `OutputExistsError`, and so on.
 
@@ -236,7 +238,7 @@ is documented in **[docs/api.md](docs/api.md)**.
 - Never pass the PIN directly as a command-line argument.
 - Prefer interactive PIN entry for manual use.
 - From Python, prefer `pin_provider` over holding the PIN in a variable: it is requested only once
-  the reader and card check out, and on the native path the certificate as well.
+  the reader, card and certificate check out.
 - For automation, prefer protected file descriptors or controlled environments.
 - Review every document before signing it.
 - Use batch signing only in trusted workflows.

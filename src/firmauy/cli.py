@@ -50,9 +50,11 @@ from firmauy.constants import (
 )
 from firmauy.pin import PinSource, get_pin
 from firmauy.pkcs11_utils import (
+    check_pin_status,
     find_token,
     iter_cert_objects,
     load_pkcs11_lib,
+    login_session,
     token_to_dict,
 )
 from firmauy.national_ca import (
@@ -503,8 +505,9 @@ def list_certs(
     ),
     pin_source: Optional[PinSource] = typer.Option(
         None, "--pin-source",
-        help="Optional. Certificates are public and read without login by default; set a PIN "
-             "source (prompt, env, stdin, fd) only if your token requires login to list certs.",
+        help="Optional. Certificates are public and read without login by default. Set a PIN "
+             "source (prompt, env, stdin, fd) only if your token requires login to list certs. "
+             "The login is refused when the token reports the PIN as locked or on its last try.",
     ),
     pin_env_var: Optional[str] = typer.Option(
         None, "--pin-env-var",
@@ -545,10 +548,13 @@ def list_certs(
 
         lib = load_pkcs11_lib(pkcs11_lib)
         token = find_token(lib, token_label)
+        if pin_source is not None:
+            # Before the PIN is read, as when signing: a login on the last try could lock the card.
+            check_pin_status(token)
         final_pin = None if pin_source is None else get_pin(pin_source, pin_env_var, pin_fd)
 
         entries = []
-        with token.open(user_pin=final_pin) as session:
+        with login_session(token, final_pin) as session:
             for cert_obj in iter_cert_objects(session):
                 try:
                     obj_id = cert_obj[pkcs11.Attribute.ID]

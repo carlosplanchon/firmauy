@@ -6,7 +6,11 @@ The card- and PKCS#11-touching API functions are covered by the SoftHSM integrat
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
+import pkcs11
 import pytest
+from cryptography.hazmat.primitives import serialization
 
 from firmauy.api import (
     CaBundle,
@@ -358,3 +362,58 @@ def test_the_api_forwards_allow_private_network(monkeypatch, tmp_path):
         api.sign_files([doc], pin="1234", tsa_url="https://tsa.example/tsr",
                        allow_private_network=True)
     assert seen.pop("allow_private_network") is True
+
+
+class _TokenReportingPinState:
+    """A token whose PIN state is ``flags``, showing ``certs`` without login, and recording the
+    PIN of every session it opens (None for a session without login)."""
+
+    def __init__(self, flags, certs=()):
+        self.flags = pkcs11.TokenFlag(flags)
+        self.certs = certs
+        self.logins = []
+
+    @contextmanager
+    def open(self, user_pin=None):
+        self.logins.append(user_pin)
+        objects = [{pkcs11.Attribute.ID: b"\x01",
+                    pkcs11.Attribute.VALUE: cert.public_bytes(serialization.Encoding.DER)}
+                   for cert in self.certs]
+
+        class _Session:
+            def get_objects(self, attrs=None):
+                return iter(objects)
+
+        yield _Session()
+
+
+def _patch_token(monkeypatch, token):
+    from firmauy import pkcs11_utils
+
+    monkeypatch.setattr(pkcs11_utils, "load_pkcs11_lib", lambda lib: object())
+    monkeypatch.setattr(pkcs11_utils, "find_token", lambda lib, label: token)
+
+
+def test_list_certs_with_a_pin_refuses_a_locked_token(monkeypatch):
+    from firmauy import api
+    from firmauy.errors import PinLockedError
+
+    token = _TokenReportingPinState(pkcs11.TokenFlag.USER_PIN_LOCKED)
+    _patch_token(monkeypatch, token)
+
+    with pytest.raises(PinLockedError):
+        api.list_certs(pkcs11_lib="lib.so", pin="1234")
+    assert token.logins == []               # refused before the login was attempted
+
+
+def test_list_certs_without_a_pin_ignores_the_pin_state(monkeypatch, cert_valid):
+    from firmauy import api
+
+    token = _TokenReportingPinState(pkcs11.TokenFlag.USER_PIN_LOCKED, certs=[cert_valid])
+    _patch_token(monkeypatch, token)
+
+    certs = api.list_certs(pkcs11_lib="lib.so")
+
+    assert len(certs) == 1
+    assert token.logins == [None]
+

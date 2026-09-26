@@ -88,20 +88,24 @@ def _pin_status(conn):
     return f"{sw1:02X}{sw2:02X}"
 
 
-def verify_pin(conn, pin: str) -> None:
-    """VERIFY the User PIN, refusing to spend the last try.
+def check_pin_status(conn):
+    """Probe the retry counter and refuse what must never reach a real VERIFY: a blocked PIN, one
+    with a single try left (or none), and a counter the card would not report. Returns the tries
+    left, or ``"verified"`` when the session is already authenticated.
 
-    Probes the retry counter first (a status-only VERIFY consumes no try): aborts if the PIN is
-    already blocked or has <=1 try left, and returns early if the session is already verified. The
-    guard fails closed: an unrecognized probe answer (a card generation that does not support the
-    status-only VERIFY) also aborts, since sending the PIN without knowing the remaining tries could
-    spend the last one. A wrong VERIFY consumes a retry and can lock the card, so the empty-PIN guard
-    lives in ``pin.get_pin`` and this only runs once we already have a candidate PIN."""
+    The probe is a status-only VERIFY, which consumes no try. The guard fails closed: an unrecognized
+    probe answer (a card generation that does not support the status-only VERIFY) also aborts,
+    since sending the PIN without knowing the remaining tries could spend the last one.
+
+    A signing session runs this before the PIN is asked for, so a GUI never opens a PIN dialog whose
+    answer could only lock the card, and verify_pin runs it again right before the PIN is sent, so
+    that function stays safe on its own.
+    """
     status = _pin_status(conn)
     if status == "blocked":
         raise PinLockedError("The PIN is blocked (too many incorrect attempts).")
     if status == "verified":
-        return
+        return status
     if not isinstance(status, int):
         # Unmodeled status word from the probe: refuse to send the PIN blind rather than risk
         # consuming the last try on a card whose retry counter we could not read.
@@ -111,8 +115,20 @@ def verify_pin(conn, pin: str) -> None:
         )
     if status <= 1:
         raise PinError(
-            f"Only {status} PIN try left; aborting for safety. Unblock the cédula before retrying."
+            f"Only {status} PIN try left: aborting for safety. Unblock the cédula before retrying."
         )
+    return status
+
+
+def verify_pin(conn, pin: str) -> None:
+    """VERIFY the User PIN, refusing to spend the last try.
+
+    Probes the retry counter first (check_pin_status): aborts if the PIN is already blocked, has
+    <=1 try left or has a counter the card would not report, and returns early if the session is
+    already verified. A wrong VERIFY consumes a retry and can lock the card, so the empty-PIN guard
+    lives in ``pin.get_pin`` and this only runs once we already have a candidate PIN."""
+    if check_pin_status(conn) == "verified":
+        return
     try:
         pin_bytes = pin.encode("ascii")
     except UnicodeEncodeError:

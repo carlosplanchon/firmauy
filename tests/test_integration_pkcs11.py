@@ -13,6 +13,7 @@ SoftHSM2 / OpenSC / OpenSSL are not installed.
 """
 
 import datetime
+import json
 import os
 import shutil
 import subprocess
@@ -29,6 +30,9 @@ PIN = "1234"
 SO_PIN = "0000"
 MI_ISSUER = "Autoridad Certificadora del Ministerio del Interior"
 TEST_CEDULA = "DNI00000000"  # Real cédula subject serialNumber format: DNI + 8 digits
+# What `--pin-source stdin` prints when it reads the PIN (firmauy/pin.py). Its absence from stderr is
+# how a subprocess test tells that the PIN was never asked for.
+PIN_READ = "Reading PIN from stdin"
 
 _MODULE_CANDIDATES = (
     "/usr/lib/softhsm/libsofthsm2.so",
@@ -147,21 +151,33 @@ class _SoftHSM:
             self.env,
         )
 
-    def import_pair(self, label, key_path, cert_path, cka_id: str) -> None:
+    def import_pair(self, label, key_path, cert_path, cka_id: str, *, private=False) -> None:
         _run(
             ["softhsm2-util", "--import", str(key_path), "--token", label,
              "--label", f"key{cka_id}", "--id", cka_id, "--pin", PIN],
             self.env,
         )
-        self.import_cert_only(label, cert_path, cka_id)
+        self.import_cert_only(label, cert_path, cka_id, private=private)
 
-    def import_cert_only(self, label, cert_path, cka_id: str) -> None:
+    def import_cert_only(self, label, cert_path, cka_id: str, *, private=False) -> None:
+        """``private`` stores the certificate as a private object, visible only after login, like a
+        token that hides its certificates behind the PIN."""
         _run(
             ["pkcs11-tool", "--module", self.module, "--token-label", label,
              "--login", "--pin", PIN, "--write-object", str(cert_path),
-             "--type", "cert", "--id", cka_id, "--label", f"cert{cka_id}"],
+             "--type", "cert", "--id", cka_id, "--label", f"cert{cka_id}",
+             *(["--private"] if private else [])],
             self.env,
         )
+
+    def skip_unless_hidden(self, label) -> None:
+        """Skip when the certificate just imported with ``private`` is visible without login:
+        pkcs11-tool before OpenSC 0.24 ignores --private for certificates."""
+        proc = self.firmauy("list-certs", "--pkcs11-lib", self.module, "--token-label", label,
+                            "--json")
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        if json.loads(proc.stdout)["certificates"]:
+            pytest.skip("this pkcs11-tool ignores --private for certificates (OpenSC < 0.24)")
 
     def firmauy(self, *args: str, input_text: str | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(
@@ -480,6 +496,74 @@ def test_expired_certificate_is_rejected(softhsm, sample_pdf, tmp_path):
     )
     assert proc.returncode != 0
     assert "expired" in _output(proc).lower()
+    # The certificate is public, so this is found before the PIN is read, as on the native path.
+    assert PIN_READ not in proc.stderr
+
+
+def test_unknown_cert_id_is_rejected_before_the_pin(softhsm, sample_pdf, tmp_path):
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01")
+
+    proc = softhsm.firmauy(
+        "sign-pdf", str(sample_pdf), str(tmp_path / "out.pdf"),
+        "--pkcs11-lib", softhsm.module, "--token-label", "test-cedula", "--cert-id", "02",
+        "--pin-source", "stdin",
+        input_text=PIN + "\n",
+    )
+    assert proc.returncode != 0
+    assert "No certificate found with ID 02" in _output(proc)
+    assert PIN_READ not in proc.stderr
+
+
+def test_a_token_that_hides_its_certificate_until_login_still_signs(
+        softhsm, sample_pdf, tmp_path):
+    # Nothing is visible before login, so the check before the PIN concludes nothing and the
+    # certificate is found after it, as it always was.
+    key, cert = _write_cert(
+        tmp_path, "identity",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER, serial_number=TEST_CEDULA,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01", private=True)
+    softhsm.skip_unless_hidden("test-cedula")
+
+    output_pdf = tmp_path / "signed.pdf"
+    proc = softhsm.firmauy(
+        "sign-pdf", str(sample_pdf), str(output_pdf),
+        "--pkcs11-lib", softhsm.module, "--token-label", "test-cedula",
+        "--pin-source", "stdin",
+        input_text=PIN + "\n",
+    )
+    assert proc.returncode == 0, _output(proc)
+    assert output_pdf.exists()
+    assert proc.stderr.count(PIN_READ) == 1
+
+
+def test_an_expired_hidden_certificate_is_still_rejected_after_the_pin(
+        softhsm, sample_pdf, tmp_path):
+    past = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=1)
+    key, cert = _write_cert(
+        tmp_path, "expired",
+        cn="PEREZ PEREZ JUAN", issuer_cn=MI_ISSUER,
+        serial_number=TEST_CEDULA, not_after=past,
+    )
+    softhsm.init_token("test-cedula")
+    softhsm.import_pair("test-cedula", key, cert, "01", private=True)
+    softhsm.skip_unless_hidden("test-cedula")
+
+    proc = softhsm.firmauy(
+        "sign-pdf", str(sample_pdf), str(tmp_path / "out.pdf"),
+        "--pkcs11-lib", softhsm.module, "--token-label", "test-cedula",
+        "--pin-source", "stdin",
+        input_text=PIN + "\n",
+    )
+    assert proc.returncode != 0
+    assert "expired" in _output(proc).lower()
+    assert PIN_READ in proc.stderr        # found after login, the only place it could be
 
 
 def test_certificate_without_private_key_is_rejected(softhsm, sample_pdf, tmp_path):

@@ -155,9 +155,14 @@ print(report.signer)              # signer common name
 ```
 
 The `pin` is supplied directly and stays in your process's memory, never in a command line or pipe.
-It is verified only after the reader and card check out, so a reader or card problem cannot spend a
-card retry. With `native=True` the certificate is read and checked before the PIN as well. With
-PKCS#11 it is chosen after login, so a certificate problem surfaces only after the PIN. **A wrong PIN still counts toward the card's retry limit and can block the cédula**, so
+It is verified only after the reader, card and certificate check out, so a broken setup cannot spend
+a card retry. A locked PIN or one on its last try is refused before the PIN is asked for: with
+`native=True` from the card's own counter, with PKCS#11 when the module reports it (OpenSC does).
+With PKCS#11 the certificate check uses what the token shows without login, as the cédula's does.
+
+> **Changed in 1.18.0:** a locked PIN and a PIN on its last try are raised before `pin_provider` runs,
+> with either backend, and with PKCS#11 so are an expired certificate and an unknown `cert_id`. They
+> used to surface after it. **A wrong PIN still counts toward the card's retry limit and can block the cédula**, so
 handle it with care.
 
 - `native=True` (default) signs over PC/SC, the same path as `--native`. `reader` selects a reader.
@@ -645,8 +650,8 @@ diagnose the environment in a structured way.
 ## Notes
 
 - The signing functions take the PIN as `pin` (a string) or as `pin_provider` (a zero-arg callable
-  invoked only when the PIN is actually needed, i.e. after the card is confirmed present, so a GUI
-  can prompt on demand). Exactly one of the two. For a terminal prompt, `getpass.getpass` keeps it
+  invoked only when the PIN is actually needed, i.e. once the card and its certificate check out,
+  so a GUI can prompt on demand). Exactly one of the two. For a terminal prompt, `getpass.getpass` keeps it
   off the screen.
 - Every result is a dataclass: `VerifyReport`, `SignReport`, `DoctorReport`/`DoctorCheck`,
   `IdentityReport`, `PhotoReport`, `TokenInfo`, `CertInfo`, `CiReport`, `CaBundle`. The exception

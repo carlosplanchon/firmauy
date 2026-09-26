@@ -1309,6 +1309,31 @@ def test_sign_batch_mixed_folder_one_session(monkeypatch, tmp_path):
     assert by_kind["cms"].name == "c.zip.p7s" and by_kind["cms"].parent == out
 
 
+def test_sign_batch_skips_a_planted_symlink_and_says_so(monkeypatch, tmp_path):
+    """A link planted in the folder used to get its target signed, whatever file on the disk it
+    pointed at. Skipped now, and named, because a batch that drops a file without a word looks
+    like one that lost it. Passed as an argument, the same file is signed: that is the way to do
+    it on purpose."""
+    calls = _patch_signing(monkeypatch)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    private = tmp_path / "private.pdf"
+    private.write_bytes(b"%PDF-1.7\n")
+    (src / "b.pdf").symlink_to(private)
+    out = tmp_path / "out"
+
+    r = runner.invoke(app, ["sign-batch", "--input-dir", str(src), "--output-dir", str(out)])
+    assert r.exit_code == 0, r.output
+    assert [o.name for _, o in calls] == ["a_firmado.pdf"]
+    assert "Skipping" in r.output and "b.pdf" in r.output
+
+    calls.clear()
+    r = runner.invoke(app, ["sign-batch", str(src / "b.pdf"), "--output-dir", str(out)])
+    assert r.exit_code == 0, r.output
+    assert [o.name for _, o in calls] == ["b_firmado.pdf"]
+
+
 def test_sign_batch_detects_output_collision(monkeypatch, tmp_path):
     # Two same-stem files of different extensions both detected as PDF would map to the same output
     # (a_firmado.pdf). The batch must refuse up front, before signing anything (F1).

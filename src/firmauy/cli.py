@@ -260,6 +260,27 @@ def _batch_input_allowed(path: Path, input_dir: Path) -> bool:
         return False
 
 
+def _discover_batch_inputs(input_dir: Path, pattern: str) -> list[Path]:
+    """The files under ``input_dir`` matching ``pattern`` that a batch signs, sorted.
+
+    A symlink, or a file that resolves outside the directory, is skipped with a warning rather
+    than in silence. Those used to be signed, so a batch that now drops them without a word looks
+    like one that lost them, and the warning names the way to sign one on purpose: as an
+    argument, where nothing is filtered. The filter itself exists because a link planted in a
+    shared folder could otherwise get a file signed that nobody put there.
+    """
+    found = []
+    for p in sorted(input_dir.glob(pattern)):
+        if not p.is_file():          # directories and dangling links were never inputs
+            continue
+        if _batch_input_allowed(p, input_dir):
+            found.append(p)
+        else:
+            _warn(f"Skipping {p}: a symlink, or a file outside --input-dir, is not signed from a "
+                  "directory listing. Pass it as an argument to sign it on purpose.")
+    return found
+
+
 def _raise_on_output_collisions(jobs: Iterable[tuple[Path, Path]]) -> None:
     """Fail fast (before the PIN) if two inputs map to the same output path. Without this a batch
     silently overwrites an earlier output with --overwrite, or fails mid-run without it. ``jobs`` is
@@ -654,9 +675,8 @@ def sign_pdf_batch(
                 )
                 raise typer.Exit(code=1)
             pattern = "**/*.pdf" if recursive else "*.pdf"
-            for p in sorted(input_dir.glob(pattern)):
-                if _batch_input_allowed(p, input_dir):
-                    jobs.append((p, _batch_output(p, input_dir, output_dir, ".pdf", suffix)))
+            for p in _discover_batch_inputs(input_dir, pattern):
+                jobs.append((p, _batch_output(p, input_dir, output_dir, ".pdf", suffix)))
 
         if not jobs:
             typer.secho(
@@ -931,9 +951,8 @@ def sign_xml_batch(
                 )
                 raise typer.Exit(code=1)
             pattern = "**/*.xml" if recursive else "*.xml"
-            for p in sorted(input_dir.glob(pattern)):
-                if _batch_input_allowed(p, input_dir):
-                    jobs.append((p, _batch_output(p, input_dir, output_dir, ".xml", suffix)))
+            for p in _discover_batch_inputs(input_dir, pattern):
+                jobs.append((p, _batch_output(p, input_dir, output_dir, ".xml", suffix)))
 
         if not jobs:
             typer.secho(
@@ -1158,10 +1177,9 @@ def sign_any_batch(
                 )
                 raise typer.Exit(code=1)
             pattern = f"**/{glob}" if recursive else glob
-            for p in sorted(input_dir.glob(pattern)):
-                if _batch_input_allowed(p, input_dir):
-                    rel = p.relative_to(input_dir).as_posix()
-                    jobs.append((p, output_dir / f"{rel}.p7s"))
+            for p in _discover_batch_inputs(input_dir, pattern):
+                rel = p.relative_to(input_dir).as_posix()
+                jobs.append((p, output_dir / f"{rel}.p7s"))
 
         if not jobs:
             typer.secho(
@@ -1500,9 +1518,8 @@ def sign_batch(
                             fg=typer.colors.RED, err=True)
                 raise typer.Exit(code=1)
             pattern = f"**/{glob}" if recursive else glob
-            for p in sorted(input_dir.glob(pattern)):
-                if _batch_input_allowed(p, input_dir):
-                    items.append((p, input_dir))
+            for p in _discover_batch_inputs(input_dir, pattern):
+                items.append((p, input_dir))
         if not items:
             typer.secho("No input files specified. Use positional arguments or --input-dir.",
                         fg=typer.colors.RED, err=True)

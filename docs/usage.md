@@ -97,6 +97,11 @@ if any file was signed and committed but its permissions could not be set, which
 documents are complete and readable only by their owner, so repair the mode rather than signing
 them again. Prints a `Signed: ok/total` summary either way.
 
+With `--input-dir`, every batch command signs only regular files that live inside the directory. A
+symlink, or a file reached through a link that leads outside it, is skipped with a warning, so a
+link planted in a shared folder cannot get a file signed that nobody put there. To sign one on
+purpose, pass it as an argument: explicit files are not filtered.
+
 ## Sign a single PDF
 
 ```bash

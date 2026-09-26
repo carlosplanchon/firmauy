@@ -53,6 +53,7 @@ from firmauy.pkcs11_utils import (
     find_token,
     iter_cert_objects,
     load_pkcs11_lib,
+    token_to_dict,
 )
 from firmauy.national_ca import (
     cache_dir,
@@ -189,6 +190,32 @@ def _warn(msg: str) -> None:
     typer.secho(msg, fg=typer.colors.YELLOW, err=True)
 
 
+def _error_code(exc: Exception) -> str:
+    """Return a stable machine-readable code for a CLI error."""
+    return {
+        "FileNotFoundError": "file_not_found",
+        "OutputExistsError": "output_exists",
+        "IncorrectPinError": "incorrect_pin",
+        "PinLockedError": "pin_locked",
+        "PinError": "pin_error",
+        "CertificateNotFoundError": "certificate_not_found",
+        "CertificateNotValidError": "certificate_not_valid",
+        "SigningKeyNotFoundError": "signing_key_not_found",
+    }.get(type(exc).__name__, "operation_failed")
+
+
+def _emit_error(exc: Exception, json_output: bool) -> None:
+    if json_output:
+        typer.echo(_json_dumps({
+            "schema_version": _JSON_SCHEMA_VERSION,
+            "ok": False,
+            "error_code": _error_code(exc),
+            "error": _format_error(exc),
+        }, False))
+    else:
+        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+
+
 def _print_signing_info(ctx, *, tsa_url: Optional[str], quiet: bool = False) -> None:
     """Print the aligned signer/token identity block shared by every sign-* command, from the
     display fields the signing session collected (the session itself prints nothing).
@@ -311,11 +338,18 @@ def list_tokens(
     pkcs11_lib: str = typer.Option(
         DEFAULT_PKCS11_LIB, "--pkcs11-lib", help="Path to the PKCS#11 module.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """List all PKCS#11 tokens visible in the library."""
     try:
         lib = load_pkcs11_lib(pkcs11_lib)
         tokens = list(lib.get_tokens())
+        if json_output:
+            typer.echo(_json_dumps({
+                "schema_version": _JSON_SCHEMA_VERSION,
+                "tokens": [token_to_dict(token) for token in tokens],
+            }, False))
+            return
         if not tokens:
             typer.echo("No PKCS#11 tokens found.")
             return
@@ -331,7 +365,7 @@ def list_tokens(
             typer.echo(f"{label:<32}  {manufacturer:<20}  {model:<16}  {serial}")
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -437,7 +471,7 @@ def list_certs(
             )
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -487,6 +521,7 @@ def sign_pdf(
     no_stamp_issuer: NoStampIssuerOpt = False,
     corner: CornerOpt = None,
     margin: MarginOpt = 20.0,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign a PDF with a Uruguayan cédula via PKCS#11 and pyHanko."""
     if output_pdf is None:
@@ -542,7 +577,7 @@ def sign_pdf(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
 
             meta = signers.PdfSignatureMetadata(
                 field_name=field_name,
@@ -580,12 +615,17 @@ def sign_pdf(
 
         if verify:
             _verify_after_pdf(output_pdf)
-        typer.secho(f"PDF signed successfully: {output_pdf}", fg=typer.colors.GREEN)
-        if verify:
-            typer.secho("Verified: signature intact and covers the whole file.", fg=typer.colors.GREEN)
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": True,
+                                    "kind": "pades", "output": str(output_pdf),
+                                    "verified": verify}, False))
+        else:
+            typer.secho(f"PDF signed successfully: {output_pdf}", fg=typer.colors.GREEN)
+            if verify:
+                typer.secho("Verified: signature intact and covers the whole file.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -644,6 +684,7 @@ def sign_pdf_batch(
     no_stamp_issuer: NoStampIssuerOpt = False,
     corner: CornerOpt = None,
     margin: MarginOpt = 20.0,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign multiple PDFs with a single PKCS#11 session (batch mode)."""
     try:
@@ -715,9 +756,10 @@ def sign_pdf_batch(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
-            typer.echo(f"Files to sign:       {len(jobs)}")
-            typer.echo("")
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
+            if not json_output:
+                typer.echo(f"Files to sign:       {len(jobs)}")
+                typer.echo("")
 
             pkcs11_signer = ctx.pyhanko_signer()
 
@@ -762,7 +804,8 @@ def sign_pdf_batch(
                     )
                     if verify:
                         _verify_after_pdf(output_pdf)
-                    typer.secho(f"OK:    {output_pdf}", fg=typer.colors.GREEN)
+                    if not json_output:
+                        typer.secho(f"OK:    {output_pdf}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
@@ -773,17 +816,24 @@ def sign_pdf_batch(
                     # it and landing here means it never ran. Saying OK would report a check
                     # that did not happen.
                     label = "SIGNED (not verified)" if verify else "SIGNED"
-                    typer.secho(f"{label}: {output_pdf}", fg=typer.colors.YELLOW)
-                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    if not json_output:
+                        typer.secho(f"{label}: {output_pdf}", fg=typer.colors.YELLOW)
+                        typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
                 except Exception as exc:
-                    typer.secho(f"ERROR: {input_pdf}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+                    if not json_output:
+                        typer.secho(f"ERROR: {input_pdf}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
-        typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
-                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
+                                    "signed": ok_count, "total": len(jobs), "errors": err_count,
+                                    "warnings": warn_count}, False))
+        else:
+            typer.echo("")
+            typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
+                       + (f" Needing a chmod: {warn_count}." if warn_count else ""))
 
         if err_count or warn_count:
             # A file needing a chmod was signed, so it is not an error, but the command did not
@@ -794,7 +844,7 @@ def sign_pdf_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -839,6 +889,7 @@ def sign_xml_cmd(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign an XML document with a Uruguayan cédula (XAdES-BES, or XAdES-T with --tsa-url)."""
     if output_xml is None:
@@ -869,7 +920,7 @@ def sign_xml_cmd(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
 
             _sign_one_xml(
                 input_xml=input_xml,
@@ -883,12 +934,17 @@ def sign_xml_cmd(
 
         if verify:
             _verify_after_xml(output_xml)
-        typer.secho(f"XML signed successfully: {output_xml}", fg=typer.colors.GREEN)
-        if verify:
-            typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": True,
+                                    "kind": "xades", "output": str(output_xml),
+                                    "verified": verify}, False))
+        else:
+            typer.secho(f"XML signed successfully: {output_xml}", fg=typer.colors.GREEN)
+            if verify:
+                typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -926,6 +982,7 @@ def sign_xml_batch(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, or XAdES-T with --tsa-url)."""
     try:
@@ -972,9 +1029,10 @@ def sign_xml_batch(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
-            typer.echo(f"Files to sign:       {len(jobs)}")
-            typer.echo("")
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
+            if not json_output:
+                typer.echo(f"Files to sign:       {len(jobs)}")
+                typer.echo("")
 
             raw_signer = ctx.raw_signer()
 
@@ -995,7 +1053,8 @@ def sign_xml_batch(
                     )
                     if verify:
                         _verify_after_xml(output_xml)
-                    typer.secho(f"OK:    {output_xml}", fg=typer.colors.GREEN)
+                    if not json_output:
+                        typer.secho(f"OK:    {output_xml}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
@@ -1006,17 +1065,24 @@ def sign_xml_batch(
                     # it and landing here means it never ran. Saying OK would report a check
                     # that did not happen.
                     label = "SIGNED (not verified)" if verify else "SIGNED"
-                    typer.secho(f"{label}: {output_xml}", fg=typer.colors.YELLOW)
-                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    if not json_output:
+                        typer.secho(f"{label}: {output_xml}", fg=typer.colors.YELLOW)
+                        typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
                 except Exception as exc:
-                    typer.secho(f"ERROR: {input_xml}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+                    if not json_output:
+                        typer.secho(f"ERROR: {input_xml}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
-        typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
-                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
+                                    "signed": ok_count, "total": len(jobs), "errors": err_count,
+                                    "warnings": warn_count}, False))
+        else:
+            typer.echo("")
+            typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
+                       + (f" Needing a chmod: {warn_count}." if warn_count else ""))
 
         if err_count or warn_count:
             # A file needing a chmod was signed, so it is not an error, but the command did not
@@ -1027,7 +1093,7 @@ def sign_xml_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1055,6 +1121,7 @@ def sign_any(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign any file with a Uruguayan cédula, producing a detached CAdES-BES
     signature (.p7s, CMS/PKCS#7). The original file is left untouched."""
@@ -1090,7 +1157,7 @@ def sign_any(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
 
             _sign_one_cms(
                 input_file=input_file,
@@ -1102,12 +1169,17 @@ def sign_any(
 
         if verify:
             _verify_after_cms(input_file, output_p7s)
-        typer.secho(f"File signed successfully: {output_p7s}", fg=typer.colors.GREEN)
-        if verify:
-            typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": True,
+                                    "kind": "cades", "output": str(output_p7s),
+                                    "verified": verify}, False))
+        else:
+            typer.secho(f"File signed successfully: {output_p7s}", fg=typer.colors.GREEN)
+            if verify:
+                typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1147,6 +1219,7 @@ def sign_any_batch(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign multiple files with a single PKCS#11 session (detached CAdES-BES .p7s).
 
@@ -1199,9 +1272,10 @@ def sign_any_batch(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
-            typer.echo(f"Files to sign:       {len(jobs)}")
-            typer.echo("")
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
+            if not json_output:
+                typer.echo(f"Files to sign:       {len(jobs)}")
+                typer.echo("")
 
             pkcs11_signer = ctx.pyhanko_signer()
 
@@ -1220,7 +1294,8 @@ def sign_any_batch(
                     )
                     if verify:
                         _verify_after_cms(input_file, output_p7s)
-                    typer.secho(f"OK:    {output_p7s}", fg=typer.colors.GREEN)
+                    if not json_output:
+                        typer.secho(f"OK:    {output_p7s}", fg=typer.colors.GREEN)
                     ok_count += 1
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
@@ -1231,17 +1306,24 @@ def sign_any_batch(
                     # it and landing here means it never ran. Saying OK would report a check
                     # that did not happen.
                     label = "SIGNED (not verified)" if verify else "SIGNED"
-                    typer.secho(f"{label}: {output_p7s}", fg=typer.colors.YELLOW)
-                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    if not json_output:
+                        typer.secho(f"{label}: {output_p7s}", fg=typer.colors.YELLOW)
+                        typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
                 except Exception as exc:
-                    typer.secho(f"ERROR: {input_file}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+                    if not json_output:
+                        typer.secho(f"ERROR: {input_file}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
 
-        typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
-                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
+                                    "signed": ok_count, "total": len(jobs), "errors": err_count,
+                                    "warnings": warn_count}, False))
+        else:
+            typer.echo("")
+            typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
+                       + (f" Needing a chmod: {warn_count}." if warn_count else ""))
 
         if err_count or warn_count:
             # A file needing a chmod was signed, so it is not an error, but the command did not
@@ -1252,7 +1334,7 @@ def sign_any_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1332,6 +1414,7 @@ def sign_cmd(
     no_stamp_issuer: NoStampIssuerOpt = False,
     corner: CornerOpt = None,
     margin: MarginOpt = 20.0,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign a file with a Uruguayan cédula, auto-detecting the signature type.
 
@@ -1382,7 +1465,7 @@ def sign_cmd(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
 
             if kind == "pdf":
                 meta = signers.PdfSignatureMetadata(
@@ -1421,12 +1504,17 @@ def sign_cmd(
             else:
                 _verify_after_cms(input_file, output)
 
-        typer.secho(f"Signed as {_SIGN_KIND_LABEL[kind]}: {output}", fg=typer.colors.GREEN)
-        if verify:
-            typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": True,
+                                    "kind": kind, "output": str(output),
+                                    "verified": verify}, False))
+        else:
+            typer.secho(f"Signed as {_SIGN_KIND_LABEL[kind]}: {output}", fg=typer.colors.GREEN)
+            if verify:
+                typer.secho("Verified: signature intact.", fg=typer.colors.GREEN)
 
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -1489,6 +1577,7 @@ def sign_batch(
     no_stamp_issuer: NoStampIssuerOpt = False,
     corner: CornerOpt = None,
     margin: MarginOpt = 20.0,
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign many files of mixed types in a single PKCS#11 session.
 
@@ -1559,9 +1648,10 @@ def sign_batch(
             pin_provider=lambda: get_pin(pin_source, pin_env_var, pin_fd),
             notify=_warn,
         ) as ctx:
-            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet)
-            typer.echo(f"Files to sign:       {len(items)}")
-            typer.echo("")
+            _print_signing_info(ctx, tsa_url=tsa_url, quiet=quiet or json_output)
+            if not json_output:
+                typer.echo(f"Files to sign:       {len(items)}")
+                typer.echo("")
 
             # A mixed batch needs both signers bound to this one open session/card: a pyHanko
             # Signer (PDF/CMS) and a raw signer (XML).
@@ -1606,7 +1696,8 @@ def sign_batch(
                         )
                         if verify:
                             _verify_after_cms(input_path, output)
-                    typer.secho(f"OK:    {output}  ({kind})", fg=typer.colors.GREEN)
+                    if not json_output:
+                        typer.secho(f"OK:    {output}  ({kind})", fg=typer.colors.GREEN)
                     ok_count += 1
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
@@ -1617,24 +1708,32 @@ def sign_batch(
                     # it and landing here means it never ran. Saying OK would report a check
                     # that did not happen.
                     label = "SIGNED (not verified)" if verify else "SIGNED"
-                    typer.secho(f"{label}: {output}  ({kind})", fg=typer.colors.YELLOW)
-                    typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
+                    if not json_output:
+                        typer.secho(f"{label}: {output}  ({kind})", fg=typer.colors.YELLOW)
+                        typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
                 except Exception as exc:
-                    typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
-                                fg=typer.colors.RED, err=True)
+                    if not json_output:
+                        typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
+                                    fg=typer.colors.RED, err=True)
                     err_count += 1
 
             # Inputs whose type could not be detected up front are reported here as errors.
             for input_path, exc in predetect_errors:
-                typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
-                            fg=typer.colors.RED, err=True)
+                if not json_output:
+                    typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
+                                fg=typer.colors.RED, err=True)
                 err_count += 1
 
-        typer.echo("")
-        typer.echo(f"Signed: {ok_count}/{len(items)}. Errors: {err_count}."
-                   + (f" Needing a chmod: {warn_count}." if warn_count else ""))
+        if json_output:
+            typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
+                                    "signed": ok_count, "total": len(items), "errors": err_count,
+                                    "warnings": warn_count}, False))
+        else:
+            typer.echo("")
+            typer.echo(f"Signed: {ok_count}/{len(items)}. Errors: {err_count}."
+                       + (f" Needing a chmod: {warn_count}." if warn_count else ""))
         if err_count or warn_count:
             # A file needing a chmod was signed, so it is not an error, but the command did not
             # do everything it was asked to. Reporting success would let a script ship a document
@@ -1802,7 +1901,8 @@ def _emit_verify_error(exc: Exception, json_output: bool, pretty: bool = False) 
     """Report a hard error: a JSON ``{"error": ...}`` on stdout in --json mode (so stdout is
     always parseable), or a coloured message on stderr otherwise."""
     if json_output:
-        typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "error": _format_error(exc)}, pretty))
+        typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": False,
+                                "error_code": _error_code(exc), "error": _format_error(exc)}, pretty))
     else:
         typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
 
@@ -2143,6 +2243,7 @@ def fetch_cas_cmd(
              "downloaded. Useful when the intermediate's official source is unreachable. "
              "Repeatable; bundles are accepted.",
     ),
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Optional: refresh the national CA certificates from the network.
 
@@ -2156,13 +2257,22 @@ def fetch_cas_cmd(
     """
     try:
         acrn_path, mica_path = fetch_cas(
-            progress=lambda msg: typer.secho(msg, fg=typer.colors.YELLOW, err=True),
+            progress=None if json_output else lambda msg: typer.secho(msg, fg=typer.colors.YELLOW, err=True),
             source_files=from_file,
         )
-        typer.secho(f"National CAs cached in {cache_dir()}", fg=typer.colors.GREEN)
-        typer.echo(f"  root:         {acrn_path.name}")
-        typer.echo(f"  intermediate: {mica_path.name}")
-        typer.echo("\nThe verify commands will now use these cached certificates instead of the bundled copies.")
+        if json_output:
+            typer.echo(_json_dumps({
+                "schema_version": _JSON_SCHEMA_VERSION,
+                "ok": True,
+                "cache_dir": str(cache_dir()),
+                "root": str(acrn_path),
+                "intermediate": str(mica_path),
+            }, False))
+        else:
+            typer.secho(f"National CAs cached in {cache_dir()}", fg=typer.colors.GREEN)
+            typer.echo(f"  root:         {acrn_path.name}")
+            typer.echo(f"  intermediate: {mica_path.name}")
+            typer.echo("\nThe verify commands will now use these cached certificates instead of the bundled copies.")
     except Exception as exc:
         typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
@@ -2237,10 +2347,18 @@ def doctor_cmd(
 # ---------------------------------------------------------------------------
 
 @app.command("list-readers")
-def list_readers_cmd() -> None:
+def list_readers_cmd(
+    json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
+) -> None:
     """List all available PC/SC smart card readers."""
     try:
         available = list_readers()
+        if json_output:
+            typer.echo(_json_dumps({
+                "schema_version": _JSON_SCHEMA_VERSION,
+                "readers": [str(reader) for reader in available],
+            }, False))
+            return
         if not available:
             typer.secho(
                 "No PC/SC readers found. Is pcscd running and a reader connected?",

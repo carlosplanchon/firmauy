@@ -172,6 +172,40 @@ def test_emit_verify_error_json(capsys):
     assert out["error"] == "boom"
 
 
+def test_list_readers_json(monkeypatch, capsys):
+    monkeypatch.setattr(cli, "list_readers", lambda: ["Reader A", "Reader B"])
+
+    cli.list_readers_cmd(json_output=True)
+
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_version": 2,
+        "readers": ["Reader A", "Reader B"],
+    }
+
+
+def test_list_tokens_json(monkeypatch, capsys):
+    class Token:
+        label = "token"
+        manufacturer = "maker"
+        model = "model"
+        serial = "serial"
+
+    class Library:
+        def get_tokens(self):
+            return [Token()]
+
+    monkeypatch.setattr(cli, "load_pkcs11_lib", lambda _: Library())
+
+    cli.list_tokens(json_output=True)
+
+    assert json.loads(capsys.readouterr().out) == {
+        "schema_version": 2,
+        "tokens": [{
+            "label": "token", "manufacturer": "maker", "model": "model", "serial": "serial",
+        }],
+    }
+
+
 # --- --json verify, end-to-end through the CLI ------------------------------
 
 def _software_p7s(data: bytes) -> bytes:

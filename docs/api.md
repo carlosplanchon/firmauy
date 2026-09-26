@@ -155,8 +155,9 @@ print(report.signer)              # signer common name
 ```
 
 The `pin` is supplied directly and stays in your process's memory, never in a command line or pipe.
-It is verified only after the PIN-free certificate read, so a reader or card problem cannot spend a
-card retry. **A wrong PIN still counts toward the card's retry limit and can block the cédula**, so
+It is verified only after the reader and card check out, so a reader or card problem cannot spend a
+card retry. With `native=True` the certificate is read and checked before the PIN as well. With
+PKCS#11 it is chosen after login, so a certificate problem surfaces only after the PIN. **A wrong PIN still counts toward the card's retry limit and can block the cédula**, so
 handle it with care.
 
 - `native=True` (default) signs over PC/SC, the same path as `--native`. `reader` selects a reader.

@@ -145,8 +145,8 @@ def _card_connection(reader_name=None):
 
 
 def _resolve_final_pin(pin, pin_provider) -> str:
-    """Resolve the PIN at the point of use (after the PIN-free certificate read, so the card's
-    retry-limit guard is preserved): a directly-supplied ``pin``, else the lazy ``pin_provider()``
+    """Resolve the PIN at the point of use, once the backend has checked what it can without one
+    (see :func:`_signing_session`): a directly-supplied ``pin``, else the lazy ``pin_provider()``
     callback (the CLI wraps its --pin-source handling in one).
 
     Rejects anything the cédula cannot accept, before it can reach the card. A wrong PIN is not
@@ -190,11 +190,12 @@ def _signing_session(*, native, reader, pkcs11_lib, token_label, cert_id, pin=No
     every sign-* command (single and batch) stays backend-agnostic; printing the identity block is
     the caller's job. Callers keep their own (fail-fast, pre-PIN) validation and timestamper build.
 
-    The PIN arrives as ``pin`` (direct) or ``pin_provider`` (a zero-arg callable invoked only after
-    the PIN-free certificate read, preserving the card's retry-limit guard). ``notify``, when given,
-    receives the informational lines as they occur (backend-option notes pre-flight, then the
-    certificate-selection warnings); without it they are dropped. The --cert-id/--native hard error
-    is always raised."""
+    The PIN arrives as ``pin`` (direct) or ``pin_provider`` (a zero-arg callable invoked only once
+    the backend has checked what it can without a PIN). The native backend reads and checks the
+    certificate first. The PKCS#11 backend only loads the module and finds the token first, and
+    chooses the certificate after login. ``notify``, when given, receives the informational lines
+    as they occur (backend-option notes pre-flight, then the certificate-selection warnings).
+    Without it they are dropped. The --cert-id/--native hard error is always raised."""
     _check_backend_options(
         native=native, reader=reader, pkcs11_lib=pkcs11_lib, token_label=token_label,
         cert_id=cert_id, notify=notify,
@@ -215,7 +216,12 @@ def _pkcs11_signing_session(*, pkcs11_lib, token_label, cert_id, pin=None, pin_p
                             notify: Optional[Callable[[str], None]] = None):
     """PKCS#11 backend: load the module, open a PIN session, select the signing certificate and
     yield the context (display fields included, nothing printed). The session is closed on exit.
-    ``notify`` receives the certificate-selection warnings (skipped candidates)."""
+    ``notify`` receives the certificate-selection warnings (skipped candidates).
+
+    The certificate is selected after login, unlike on the native path: ``select_certificate``
+    pairs each certificate with its private key, and private keys are only visible in a logged-in
+    session. So an expired certificate or an unknown --cert-id surfaces after the PIN is entered.
+    A malformed --cert-id, a module that does not load and a missing token still fail before it."""
     # Validate the hex cert ID up front: a malformed --cert-id must fail before the PIN is obtained
     # (an incorrect PIN counts toward the card's retry limit), not later inside select_certificate.
     if cert_id is not None:

@@ -455,9 +455,11 @@ def sign_file(
     :class:`CardNotFoundError`, :class:`OutputExistsError`, ...) so a caller can branch on them.
 
     Supply the card's User PIN as ``pin`` (a string, directly) or as ``pin_provider`` (a zero-arg
-    callable invoked only when the PIN is actually needed, i.e. after the PIN-free certificate read,
-    so a GUI can prompt on demand). Exactly one of the two is required. Either way the PIN is used
-    only after that read, so a reader or card problem cannot spend a card retry.
+    callable invoked only when the PIN is actually needed, i.e. once the reader and card check out,
+    so a GUI can prompt on demand). Exactly one of the two is required. Either way a reader or card
+    problem cannot spend a card retry. The native backend also reads and checks the certificate
+    before the PIN. The PKCS#11 backend chooses it after login, so a certificate problem there
+    surfaces only after the PIN is entered.
 
     ``native`` defaults to True (the PC/SC backend the desktop app uses), where ``reader`` picks a
     PC/SC reader. Set it False for a PKCS#11 module: ``pkcs11_lib`` is the module path (the bundled

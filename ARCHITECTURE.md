@@ -73,12 +73,17 @@ limited retries, so the session is arranged to make that as unlikely as possible
 
 1. Pre-flight checks run first, with no reader or PIN access (a hard error for `cert_id` with
    native, notes for options that do not apply).
-2. The reader, card and certificate are checked without any PIN.
+2. What can be checked without a PIN is checked. The native path reads the signing certificate
+   and rejects an expired or not-yet-valid one. The PKCS#11 path loads the module and finds the
+   token, but chooses the certificate only after login, because pairing a certificate with its
+   private key needs the PIN session. So a certificate problem surfaces before the PIN on the
+   native path and after it on PKCS#11.
 3. Only then is the PIN resolved: a direct `pin` string, or a lazy `pin_provider()` callback
    invoked at this exact point. The CLI wraps its whole `--pin-source` handling in one provider.
    A GUI can open its PIN dialog here, knowing the card is ready.
-4. An empty PIN is refused before touching the card. On the native path, `verify_pin` probes the
-   retry counter first and refuses to spend the last try.
+4. A PIN that is empty, not all digits, or not 4 to 8 digits long is refused before touching the
+   card. On the native path, `verify_pin` probes the retry counter first and refuses to spend the
+   last try. The PKCS#11 path has no such guard.
 
 The PIN is never placed in argv, results, logs or exception messages.
 

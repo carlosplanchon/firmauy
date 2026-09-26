@@ -269,6 +269,23 @@ def test_the_appearance_rejects_a_bad_value_before_the_card_is_touched():
         PdfAppearance(image="/nowhere/logo.png")
 
 
+def test_an_unusable_stamp_image_is_refused_when_the_appearance_is_built(tmp_path):
+    """Existing is not enough: a file that is not an image used to pass here and fail only when
+    the stamp was drawn, which is after the PIN."""
+    from PIL import Image
+
+    from firmauy.api import PdfAppearance
+
+    bad = tmp_path / "logo.png"
+    bad.write_bytes(b"not an image")
+    with pytest.raises(ValueError, match="not a usable image"):
+        PdfAppearance(image=bad)
+
+    good = tmp_path / "ok.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(good)
+    PdfAppearance(image=good)
+
+
 def test_the_appearance_travels_from_sign_to_the_pdf_signer(monkeypatch, tmp_path):
     """sign() routes by content, and the appearance only means something on the PDF branch. This
     holds that it arrives there rather than being dropped on the way, which a default that

@@ -82,6 +82,23 @@ def split_signer_name(signer: str, max_width: float | None = None) -> list[str]:
     return lines
 
 
+def check_stamp_image(image_path) -> None:
+    """Fail on an image the stamp cannot use, before any card is touched.
+
+    Opening reads the header only, so a file past Pillow's decompression-bomb limit is refused on
+    its declared size without being decoded, and ``verify`` catches a truncated or corrupt one.
+    Whatever the decoder refuses comes back as a ValueError carrying its message, for the caller
+    to put in context.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(image_path) as im:
+            im.verify()
+    except Exception as exc:
+        raise ValueError(str(exc) or type(exc).__name__) from exc
+
+
 def _sized_for_box(image_path, w: float, h: float):
     """Open the image and shrink it to the pixels the box can actually show.
 
@@ -96,9 +113,15 @@ def _sized_for_box(image_path, w: float, h: float):
     """
     from PIL import Image
 
-    with Image.open(image_path) as src:   # context manager: don't leak the file handle
-        img = src.convert("RGBA")
     cap = (max(1, round(w / 72 * STAMP_IMAGE_DPI)), max(1, round(h / 72 * STAMP_IMAGE_DPI)))
+    with Image.open(image_path) as src:   # context manager: don't leak the file handle
+        # A JPEG can be decoded at 1/2, 1/4 or 1/8 of its size for almost nothing, and the box
+        # never shows more than `cap`. Measured on a 48 MP phone photo: 560 MB decoded whole,
+        # 38 MB this way, and the same 29 KB stamp. The 2x margin is the one Image.thumbnail
+        # keeps when it does the same. Every other format ignores the call and is decoded whole,
+        # as before.
+        src.draft(None, (2 * cap[0], 2 * cap[1]))
+        img = src.convert("RGBA")
     if img.width > cap[0] or img.height > cap[1]:
         img.thumbnail(cap, Image.LANCZOS)
     return img

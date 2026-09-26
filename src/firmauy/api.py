@@ -269,8 +269,17 @@ class PdfAppearance:
             raise ValueError(
                 f"timezone {self.timezone!r} is not a valid IANA time zone: "
                 f"{exc.args[0] if exc.args else exc}") from exc
-        if self.image is not None and not Path(self.image).is_file():
-            raise FileNotFoundError(f"stamp image not found: {self.image}")
+        if self.image is not None:
+            if not Path(self.image).is_file():
+                raise FileNotFoundError(f"stamp image not found: {self.image}")
+            # Otherwise decoded only when the stamp is drawn, inside the signing call and after
+            # the PIN: the ordering this method exists to prevent.
+            from firmauy.appearance import check_stamp_image
+
+            try:
+                check_stamp_image(self.image)
+            except ValueError as exc:
+                raise ValueError(f"stamp image {self.image} is not a usable image: {exc}") from exc
 
     def _pdf_kwargs(self) -> dict:
         """The arguments `_sign_one_pdf` takes for the appearance. Private on purpose: the shape

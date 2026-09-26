@@ -223,11 +223,10 @@ def _validate_image(image) -> None:
     typer only checks the file exists; this catches a corrupt file or a non-image."""
     if image is None:
         return
-    from PIL import Image, UnidentifiedImageError
+    from firmauy.appearance import check_stamp_image
     try:
-        with Image.open(image) as im:
-            im.verify()
-    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        check_stamp_image(image)
+    except ValueError as exc:
         raise RuntimeError(f"--image '{image}' is not a valid image: {exc}")
 
 

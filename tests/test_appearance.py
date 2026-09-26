@@ -7,6 +7,7 @@ from PIL import Image
 from firmauy.signing import _box_in_corner, _page_media_box
 from firmauy.appearance import (
     _sized_for_box,
+    check_stamp_image,
     ensure_output_parent,
     make_appearance_pdf,
     split_signer_name,
@@ -356,3 +357,43 @@ class TestImageIsNotEmbeddedWholesale:
         shrunk = _sized_for_box(str(path), APPEARANCE_WIDTH, APPEARANCE_HEIGHT)
         assert shrunk.mode == "RGBA"
         assert shrunk.getpixel((0, 0))[3] == 0, "the transparent corner became opaque"
+
+    def test_a_large_jpeg_is_decoded_at_a_fraction_of_its_size(self, tmp_path, monkeypatch):
+        """Decoding a photo whole only to throw most of it away cost 560 MB on a 48 MP phone
+        photo. What the decoder was asked for is visible on the opened file: its size."""
+        path = tmp_path / "photo.jpg"
+        Image.new("RGB", (3600, 1400), (200, 190, 180)).save(path, quality=85)
+        opened = []
+        real_open = Image.open
+
+        def spy(*args, **kwargs):
+            opened.append(real_open(*args, **kwargs))
+            return opened[-1]
+
+        monkeypatch.setattr(Image, "open", spy)
+        shrunk = _sized_for_box(str(path), APPEARANCE_WIDTH, APPEARANCE_HEIGHT)
+
+        assert opened[0].size[0] < 3600, "the JPEG was decoded at full size"
+        assert shrunk.width <= round(APPEARANCE_WIDTH / 72 * STAMP_IMAGE_DPI)
+        assert shrunk.height <= round(APPEARANCE_HEIGHT / 72 * STAMP_IMAGE_DPI)
+
+
+class TestCheckStampImage:
+    """Everything the stamp would refuse after the PIN, refused before it."""
+
+    def test_a_real_image_passes(self, sample_png):
+        check_stamp_image(str(sample_png))
+
+    def test_a_corrupt_file_is_a_value_error(self, tmp_path):
+        bad = tmp_path / "bad.png"
+        bad.write_bytes(b"not an image")
+        with pytest.raises(ValueError, match="cannot identify image file"):
+            check_stamp_image(str(bad))
+
+    def test_a_decompression_bomb_is_refused_on_its_header(self, tmp_path, monkeypatch):
+        """Pillow's own limit, applied to the declared size, so nothing is decoded to find out."""
+        path = tmp_path / "bomb.png"
+        Image.new("RGB", (64, 64)).save(path)
+        monkeypatch.setattr(Image, "MAX_IMAGE_PIXELS", 1000)     # 4096 pixels is over twice that
+        with pytest.raises(ValueError, match="decompression bomb"):
+            check_stamp_image(str(path))

@@ -203,7 +203,7 @@ sign_pdf("contract.pdf", pin, appearance=PdfAppearance(
 | `corner` | `None` | `"bottom-left"`, `"bottom-right"`, `"top-left"` or `"top-right"`, resolved against that page's real size. `None` uses the coordinates below as given. The values are the `StampCorner` enum, also importable from `firmauy.api`. |
 | `margin` | `20` | Points between the stamp and the two page edges of `corner`. |
 | `x1`, `y1`, `x2`, `y2` | `20, 20, 225, 90` | The box, in PDF points from the bottom-left of the page. With a `corner` set, only their size is used and the corner decides the place. |
-| `image` | `None` | A PNG or JPEG to draw in the box. |
+| `image` | `None` | A PNG or JPEG to draw in the box. Checked when the appearance is built, so a file Pillow cannot decode raises `ValueError` there, before any card is touched. |
 | `image_mode` | `"background"` | `background` (behind the text, faded), `side` (left of it), `only` (image, no text). The values are the `ImageMode` enum, also importable from `firmauy.api`. |
 | `image_opacity` | `0.2` | How faded, in `background` mode. |
 | `timezone` | `"America/Montevideo"` | The zone the printed date is rendered in. |

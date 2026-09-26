@@ -59,6 +59,12 @@ dev = ["pytest>=8", "signxml>=4", "hypothesis>=6"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# A validation context without trust_roots makes pyhanko-certvalidator fall back to the operating
+# system's trust store, which it deprecated in 0.32 and will stop honouring. firmauy never means
+# that, so a new fallback, in firmauy or reached through pyHanko, fails the suite.
+filterwarnings = [
+    "error:Relying on the operating system's trust list:DeprecationWarning",
+]
 
 [tool.ruff.lint]
 # Select the classic default ruleset explicitly (pyflakes + a pycodestyle

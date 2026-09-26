@@ -44,7 +44,12 @@ report = verify("data.bin.p7s", original="data.bin")
 ```
 
 Returns a `VerifyReport(indication, signatures)`, where each signature is a
-`firmauy.verify_common.VerifyResult`.
+`firmauy.verify_common.VerifyResult`. Its `trusted` is True only when the chain reached one of the
+anchors in use (`ca_file`, the cache or the bundled national CAs). With `no_trust=True` no chain is
+evaluated and it is False.
+
+> **Changed in 1.18.0:** without anchors, a PDF or CMS signature used to be judged against the
+> operating system's trust store, so `trusted` could come back True under `no_trust=True`.
 
 `check_revocation=True` also fetches CRL and OCSP data, and any missing issuer certificate, and
 fails the chain when the certificate is revoked or that data cannot be obtained. Those URLs come

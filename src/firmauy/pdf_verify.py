@@ -26,6 +26,7 @@ from firmauy.verify_common import (
     Check,
     VerifyResult,
     muted_path_building_warnings,
+    no_trust_context,
     note_refused_fetches,
     note_trusted_time,
     revocation_fetcher_backend,
@@ -142,8 +143,7 @@ def verify_pdf(
 
     def signer_context(moment, backend):
         if not trust_roots:
-            return ValidationContext(allow_fetching=False, revocation_mode="soft-fail",
-                                     moment=moment)
+            return no_trust_context(moment)
         return ValidationContext(
             trust_roots=to_asn1_certs(trust_roots),
             other_certs=to_asn1_certs(intermediates),

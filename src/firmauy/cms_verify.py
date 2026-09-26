@@ -28,6 +28,7 @@ from firmauy.verify_common import (
     Check,
     VerifyResult,
     muted_path_building_warnings,
+    no_trust_context,
     note_refused_fetches,
     note_trusted_time,
     revocation_fetcher_backend,
@@ -163,7 +164,7 @@ def verify_cms(
         timestamp_of(signer_infos[0], tsa_trust_roots, tsa_other_certs)
         if len(signer_infos) else (None, None, None))
 
-    vc = backend = None
+    backend = None
     if trust_roots:
         backend = revocation_fetcher_backend(check_revocation, allow_private_network)
         vc = ValidationContext(
@@ -177,6 +178,10 @@ def verify_cms(
             # hand that choice to whoever could alter the file.
             moment=trusted_time or at,
         )
+    else:
+        # Never None: pyHanko would build its own context on the operating system's trust store,
+        # and reuse it for the timestamp. See no_trust_context.
+        vc = no_trust_context(trusted_time or at)
 
     ts_vc = _tsa_context(tsa_trust_roots, tsa_other_certs,
                          (info.gen_time if info else None) or at)

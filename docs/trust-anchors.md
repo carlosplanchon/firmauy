@@ -20,6 +20,10 @@ additionally checked to be signed by the root, so the origin of those bytes neve
 (`--ca-file` is different: it lets you supply your *own* trust anchors for verification, so it is
 intentionally **not** pinned, the whole point being to trust a set you chose.)
 
+The operating system's trust store is never consulted. Without anchors (`--no-trust`) no chain is
+evaluated, so no signer is reported as trusted, even one whose chain reaches a root the system
+trusts.
+
 | Certificate | Source(s), tried in order |
 |---|---|
 | AC Raíz Nacional de Uruguay (AGESIC) | `https://www.uce.gub.uy/acrn/acrn.cer` |

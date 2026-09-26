@@ -287,7 +287,8 @@ def test_sign_via_softhsm_produces_valid_signature(softhsm, sample_pdf, tmp_path
         reader = PdfFileReader(f)
         embedded = reader.embedded_signatures
         assert len(embedded) == 1
-        status = validate_pdf_signature(embedded[0], ValidationContext(allow_fetching=False))
+        status = validate_pdf_signature(embedded[0],
+                                        ValidationContext(trust_roots=[], allow_fetching=False))
         assert status.intact, "signed bytes were altered"
         assert status.valid, "signature cryptography did not verify"
         assert status.coverage.name == "ENTIRE_FILE"
@@ -328,7 +329,8 @@ def test_api_sign_pdf_direct_pin(softhsm, sample_pdf, tmp_path, monkeypatch):
         reader = PdfFileReader(f)
         embedded = reader.embedded_signatures
         assert len(embedded) == 1
-        status = validate_pdf_signature(embedded[0], ValidationContext(allow_fetching=False))
+        status = validate_pdf_signature(embedded[0],
+                                        ValidationContext(trust_roots=[], allow_fetching=False))
         assert status.intact
         assert status.valid
         assert status.coverage.name == "ENTIRE_FILE"
@@ -364,7 +366,8 @@ def test_sign_with_image_appearance_stays_valid(softhsm, sample_pdf, tmp_path):
         reader = PdfFileReader(f)
         embedded = reader.embedded_signatures
         assert len(embedded) == 1
-        status = validate_pdf_signature(embedded[0], ValidationContext(allow_fetching=False))
+        status = validate_pdf_signature(embedded[0],
+                                        ValidationContext(trust_roots=[], allow_fetching=False))
         assert status.intact and status.valid
         assert status.coverage.name == "ENTIRE_FILE"
 

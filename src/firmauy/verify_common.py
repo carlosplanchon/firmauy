@@ -76,6 +76,21 @@ _TST_ATTR = "signature_time_stamp_token"
 CHAIN_CHECK = "certificate chain to trusted root"
 
 
+def no_trust_context(moment):
+    """The signer's validation context when no trust anchors were given (--no-trust, and the
+    check after signing).
+
+    An explicit empty list of roots, not None. pyhanko-certvalidator reads None as the operating
+    system's trust store, a fallback it deprecated in 0.32 and will stop honouring, which would
+    break these paths on a fresh install. And while it lasts, a signer whose chain reaches a root
+    the system trusts comes back trusted from a verification that was told not to evaluate trust.
+    """
+    from pyhanko_certvalidator import ValidationContext
+
+    return ValidationContext(trust_roots=[], allow_fetching=False, revocation_mode="soft-fail",
+                             moment=moment)
+
+
 def revocation_fetcher_backend(check_revocation: bool, allow_private_network: bool = False):
     """The fetcher backend for the signer's chain, or None when revocation is not checked.
 

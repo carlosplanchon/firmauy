@@ -6,7 +6,7 @@ import json
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated, Iterable, List, Optional
+from typing import Annotated, Iterable, List, NoReturn, Optional
 from zoneinfo import ZoneInfo
 
 import pkcs11
@@ -62,7 +62,23 @@ from firmauy.national_ca import (
 from firmauy.pdf_verify import verify_pdf
 from firmauy.xml_verify import verify_xml
 from firmauy.cms_verify import MAX_CMS_BYTES, verify_cms
-from firmauy.errors import OutputCommittedError
+from firmauy.errors import (
+    CardNotFoundError,
+    CertificateError,
+    CertificateNotFoundError,
+    CertificateNotValidError,
+    DetachedOriginalRequiredError,
+    IncorrectPinError,
+    OutputAccessControlError,
+    OutputCommittedError,
+    OutputExistsError,
+    PinError,
+    PinLockedError,
+    PostSignVerificationError,
+    ReaderNotFoundError,
+    SigningKeyNotFoundError,
+    TokenNotFoundError,
+)
 from firmauy._shared import (
     _INDICATION_RANK,
     _collect_doctor_checks,
@@ -190,18 +206,78 @@ def _warn(msg: str) -> None:
     typer.secho(msg, fg=typer.colors.YELLOW, err=True)
 
 
+# One table for the error_code of every --json error object, signing and verification alike.
+# Checked in order with isinstance, most specific first, so a subclass added later inherits its
+# parent's code instead of falling through to the generic one, and renaming a class cannot quietly
+# change what a script reads.
+_ERROR_CODES = (
+    (IncorrectPinError, "incorrect_pin"),
+    (PinLockedError, "pin_locked"),
+    (PinError, "pin_error"),
+    (ReaderNotFoundError, "reader_not_found"),
+    (CardNotFoundError, "card_not_found"),
+    (TokenNotFoundError, "token_not_found"),
+    (CertificateNotFoundError, "certificate_not_found"),
+    (CertificateNotValidError, "certificate_not_valid"),
+    (SigningKeyNotFoundError, "signing_key_not_found"),
+    (CertificateError, "certificate_error"),
+    (OutputExistsError, "output_exists"),
+    (OutputCommittedError, "output_committed"),
+    (OutputAccessControlError, "output_access_control"),
+    (PostSignVerificationError, "post_sign_verification_failed"),
+    (DetachedOriginalRequiredError, "detached_original_required"),
+    (FileNotFoundError, "file_not_found"),
+    (typer.BadParameter, "invalid_argument"),
+)
+
+
 def _error_code(exc: Exception) -> str:
-    """Return a stable machine-readable code for a CLI error."""
-    return {
-        "FileNotFoundError": "file_not_found",
-        "OutputExistsError": "output_exists",
-        "IncorrectPinError": "incorrect_pin",
-        "PinLockedError": "pin_locked",
-        "PinError": "pin_error",
-        "CertificateNotFoundError": "certificate_not_found",
-        "CertificateNotValidError": "certificate_not_valid",
-        "SigningKeyNotFoundError": "signing_key_not_found",
-    }.get(type(exc).__name__, "operation_failed")
+    """The stable machine-readable code for an error, or ``operation_failed`` when none fits."""
+    for cls, code in _ERROR_CODES:
+        if isinstance(exc, cls):
+            return code
+    return "operation_failed"
+
+
+def _fail(message: str, json_output: bool, error_code: str = "invalid_argument") -> NoReturn:
+    """Stop on a problem the command found itself, reported like every other failure: the JSON
+    error object on stdout under --json, so a script never has to read stderr, and the red line on
+    stderr otherwise. Exits 1."""
+    if json_output:
+        typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": False,
+                                "error_code": error_code, "error": message}, False))
+    else:
+        typer.secho(message, fg=typer.colors.RED, err=True)
+    raise typer.Exit(code=1)
+
+
+# The signature kind as --json names it: the words the API's SignReport uses, not the internal
+# names `sign` dispatches on.
+_JSON_KIND = {"pdf": "pades", "xml": "xades", "any": "cades"}
+
+
+def _batch_file_result(input_path: Path, output_path: Optional[Path], status: str, *,
+                       verified: bool = False, exc: Optional[Exception] = None,
+                       kind: Optional[str] = None) -> dict:
+    """One file of a batch as data, the JSON twin of its OK / SIGNED / ERROR line.
+
+    ``signed`` is the SIGNED line: the document was signed and committed, but its permissions could
+    not be set, and ``warning`` says why. It is neither an error nor ``ok``. ``output`` is null for
+    an input that failed before an output name could be chosen.
+    """
+    entry = {"input": str(input_path),
+             "output": str(output_path) if output_path is not None else None,
+             "status": status}
+    if kind is not None:
+        entry["kind"] = _JSON_KIND[kind]
+    if status == "error":
+        entry["error_code"] = _error_code(exc)
+        entry["error"] = _format_error(exc)
+    else:
+        entry["verified"] = verified
+        if exc is not None:
+            entry["warning"] = _format_error(exc)
+    return entry
 
 
 def _emit_error(exc: Exception, json_output: bool) -> None:
@@ -709,32 +785,16 @@ def sign_pdf_batch(
 
         if input_dir is not None:
             if not input_dir.is_dir():
-                typer.secho(
-                    f"--input-dir '{input_dir}' is not a valid directory.",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(code=1)
+                _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = "**/*.pdf" if recursive else "*.pdf"
             for p in _discover_batch_inputs(input_dir, pattern):
                 jobs.append((p, _batch_output(p, input_dir, output_dir, ".pdf", suffix)))
 
         if not jobs:
-            typer.secho(
-                "No input files specified. "
-                "Use positional arguments or --input-dir.",
-                fg=typer.colors.RED,
-                err=True,
-            )
-            raise typer.Exit(code=1)
+            _fail("No input files specified. Use positional arguments or --input-dir.", json_output)
 
         if x2 <= x1 or y2 <= y1:
-            typer.secho(
-                "Coordinates must satisfy x1 < x2 and y1 < y2.",
-                fg=typer.colors.RED,
-                err=True,
-            )
-            raise typer.Exit(code=1)
+            _fail("Coordinates must satisfy x1 < x2 and y1 < y2.", json_output)
 
         box_width = x2 - x1
         box_height = y2 - y1
@@ -774,6 +834,7 @@ def sign_pdf_batch(
             ok_count = 0
             err_count = 0
             warn_count = 0
+            results = []
 
             for input_pdf, output_pdf in jobs:
                 try:
@@ -807,6 +868,7 @@ def sign_pdf_batch(
                     if not json_output:
                         typer.secho(f"OK:    {output_pdf}", fg=typer.colors.GREEN)
                     ok_count += 1
+                    results.append(_batch_file_result(input_pdf, output_pdf, "ok", verified=verify))
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
                     # the file was not produced while it sat there complete, and the summary
@@ -821,15 +883,17 @@ def sign_pdf_batch(
                         typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
+                    results.append(_batch_file_result(input_pdf, output_pdf, "signed", exc=exc))
                 except Exception as exc:
                     if not json_output:
                         typer.secho(f"ERROR: {input_pdf}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
+                    results.append(_batch_file_result(input_pdf, output_pdf, "error", exc=exc))
 
         if json_output:
             typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
                                     "signed": ok_count, "total": len(jobs), "errors": err_count,
-                                    "warnings": warn_count}, False))
+                                    "warnings": warn_count, "files": results}, False))
         else:
             typer.echo("")
             typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
@@ -1001,24 +1065,13 @@ def sign_xml_batch(
 
         if input_dir is not None:
             if not input_dir.is_dir():
-                typer.secho(
-                    f"--input-dir '{input_dir}' is not a valid directory.",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(code=1)
+                _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = "**/*.xml" if recursive else "*.xml"
             for p in _discover_batch_inputs(input_dir, pattern):
                 jobs.append((p, _batch_output(p, input_dir, output_dir, ".xml", suffix)))
 
         if not jobs:
-            typer.secho(
-                "No input files specified. "
-                "Use positional arguments or --input-dir.",
-                fg=typer.colors.RED,
-                err=True,
-            )
-            raise typer.Exit(code=1)
+            _fail("No input files specified. Use positional arguments or --input-dir.", json_output)
 
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1039,6 +1092,7 @@ def sign_xml_batch(
             ok_count = 0
             err_count = 0
             warn_count = 0
+            results = []
 
             for input_xml, output_xml in jobs:
                 try:
@@ -1056,6 +1110,7 @@ def sign_xml_batch(
                     if not json_output:
                         typer.secho(f"OK:    {output_xml}", fg=typer.colors.GREEN)
                     ok_count += 1
+                    results.append(_batch_file_result(input_xml, output_xml, "ok", verified=verify))
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
                     # the file was not produced while it sat there complete, and the summary
@@ -1070,15 +1125,17 @@ def sign_xml_batch(
                         typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
+                    results.append(_batch_file_result(input_xml, output_xml, "signed", exc=exc))
                 except Exception as exc:
                     if not json_output:
                         typer.secho(f"ERROR: {input_xml}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
+                    results.append(_batch_file_result(input_xml, output_xml, "error", exc=exc))
 
         if json_output:
             typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
                                     "signed": ok_count, "total": len(jobs), "errors": err_count,
-                                    "warnings": warn_count}, False))
+                                    "warnings": warn_count, "files": results}, False))
         else:
             typer.echo("")
             typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
@@ -1243,25 +1300,14 @@ def sign_any_batch(
 
         if input_dir is not None:
             if not input_dir.is_dir():
-                typer.secho(
-                    f"--input-dir '{input_dir}' is not a valid directory.",
-                    fg=typer.colors.RED,
-                    err=True,
-                )
-                raise typer.Exit(code=1)
+                _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = f"**/{glob}" if recursive else glob
             for p in _discover_batch_inputs(input_dir, pattern):
                 rel = p.relative_to(input_dir).as_posix()
                 jobs.append((p, output_dir / f"{rel}.p7s"))
 
         if not jobs:
-            typer.secho(
-                "No input files specified. "
-                "Use positional arguments or --input-dir.",
-                fg=typer.colors.RED,
-                err=True,
-            )
-            raise typer.Exit(code=1)
+            _fail("No input files specified. Use positional arguments or --input-dir.", json_output)
 
         _raise_on_output_collisions(jobs)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1282,6 +1328,7 @@ def sign_any_batch(
             ok_count = 0
             err_count = 0
             warn_count = 0
+            results = []
 
             for input_file, output_p7s in jobs:
                 try:
@@ -1297,6 +1344,7 @@ def sign_any_batch(
                     if not json_output:
                         typer.secho(f"OK:    {output_p7s}", fg=typer.colors.GREEN)
                     ok_count += 1
+                    results.append(_batch_file_result(input_file, output_p7s, "ok", verified=verify))
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
                     # the file was not produced while it sat there complete, and the summary
@@ -1311,15 +1359,17 @@ def sign_any_batch(
                         typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
+                    results.append(_batch_file_result(input_file, output_p7s, "signed", exc=exc))
                 except Exception as exc:
                     if not json_output:
                         typer.secho(f"ERROR: {input_file}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
                     err_count += 1
+                    results.append(_batch_file_result(input_file, output_p7s, "error", exc=exc))
 
         if json_output:
             typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
                                     "signed": ok_count, "total": len(jobs), "errors": err_count,
-                                    "warnings": warn_count}, False))
+                                    "warnings": warn_count, "files": results}, False))
         else:
             typer.echo("")
             typer.echo(f"Signed: {ok_count}/{len(jobs)}. Errors: {err_count}."
@@ -1506,7 +1556,7 @@ def sign_cmd(
 
         if json_output:
             typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": True,
-                                    "kind": kind, "output": str(output),
+                                    "kind": _JSON_KIND[kind], "output": str(output),
                                     "verified": verify}, False))
         else:
             typer.secho(f"Signed as {_SIGN_KIND_LABEL[kind]}: {output}", fg=typer.colors.GREEN)
@@ -1603,16 +1653,12 @@ def sign_batch(
         items: list[tuple[Path, Optional[Path]]] = [(p, None) for p in (input_files or [])]
         if input_dir is not None:
             if not input_dir.is_dir():
-                typer.secho(f"--input-dir '{input_dir}' is not a valid directory.",
-                            fg=typer.colors.RED, err=True)
-                raise typer.Exit(code=1)
+                _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = f"**/{glob}" if recursive else glob
             for p in _discover_batch_inputs(input_dir, pattern):
                 items.append((p, input_dir))
         if not items:
-            typer.secho("No input files specified. Use positional arguments or --input-dir.",
-                        fg=typer.colors.RED, err=True)
-            raise typer.Exit(code=1)
+            _fail("No input files specified. Use positional arguments or --input-dir.", json_output)
 
         # Resolve each input's kind and output path up front (a 1 KB read per file, no card needed),
         # so output-path collisions are caught before the PIN. A detection failure here becomes a
@@ -1665,6 +1711,7 @@ def sign_batch(
             ok_count = 0
             err_count = 0
             warn_count = 0
+            results = []
             for input_path, kind, output in jobs:
                 try:
                     if kind == "pdf":
@@ -1699,6 +1746,8 @@ def sign_batch(
                     if not json_output:
                         typer.secho(f"OK:    {output}  ({kind})", fg=typer.colors.GREEN)
                     ok_count += 1
+                    results.append(_batch_file_result(input_path, output, "ok", verified=verify,
+                                                      kind=kind))
                 except OutputCommittedError as exc:
                     # Written, committed, only its mode is wrong. Counting it as an error said
                     # the file was not produced while it sat there complete, and the summary
@@ -1713,11 +1762,15 @@ def sign_batch(
                         typer.secho(f"WARN:  {_format_error(exc)}", fg=typer.colors.YELLOW, err=True)
                     ok_count += 1
                     warn_count += 1
+                    results.append(_batch_file_result(input_path, output, "signed", exc=exc,
+                                                      kind=kind))
                 except Exception as exc:
                     if not json_output:
                         typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
                                     fg=typer.colors.RED, err=True)
                     err_count += 1
+                    results.append(_batch_file_result(input_path, output, "error", exc=exc,
+                                                      kind=kind))
 
             # Inputs whose type could not be detected up front are reported here as errors.
             for input_path, exc in predetect_errors:
@@ -1725,11 +1778,12 @@ def sign_batch(
                     typer.secho(f"ERROR: {input_path}: {_format_error(exc)}",
                                 fg=typer.colors.RED, err=True)
                 err_count += 1
+                results.append(_batch_file_result(input_path, None, "error", exc=exc))
 
         if json_output:
             typer.echo(_json_dumps({"schema_version": _JSON_SCHEMA_VERSION, "ok": not (err_count or warn_count),
                                     "signed": ok_count, "total": len(items), "errors": err_count,
-                                    "warnings": warn_count}, False))
+                                    "warnings": warn_count, "files": results}, False))
         else:
             typer.echo("")
             typer.echo(f"Signed: {ok_count}/{len(items)}. Errors: {err_count}."
@@ -1743,7 +1797,7 @@ def sign_batch(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -2274,7 +2328,7 @@ def fetch_cas_cmd(
             typer.echo(f"  intermediate: {mica_path.name}")
             typer.echo("\nThe verify commands will now use these cached certificates instead of the bundled copies.")
     except Exception as exc:
-        typer.secho(f"Error: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -2358,6 +2412,8 @@ def list_readers_cmd(
                 "schema_version": _JSON_SCHEMA_VERSION,
                 "readers": [str(reader) for reader in available],
             }, False))
+            if not available:
+                raise typer.Exit(code=1)    # the exit status is the same with or without --json
             return
         if not available:
             typer.secho(
@@ -2371,7 +2427,10 @@ def list_readers_cmd(
     except typer.Exit:
         raise
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        if json_output:
+            _emit_error(exc, json_output)
+        else:
+            typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
         raise typer.Exit(code=1)
 
 

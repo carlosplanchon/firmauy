@@ -486,6 +486,52 @@ firmauy sign-pdf input.pdf --verify
 # Verified: signature intact and covers the whole file.
 ```
 
+### JSON output (`--json`)
+
+Every signing command (`sign`, `sign-pdf`, `sign-xml`, `sign-any` and their batch forms), and
+`list-tokens`, `list-readers` and `fetch-cas`, take `--json`. Stdout then carries a single JSON
+object and nothing else: the signer block and the per-file lines are left out, notices still go to
+stderr, and the exit code is the same as without the flag.
+
+A single file:
+
+```json
+{"schema_version": 2, "ok": true, "kind": "pades", "output": "doc_firmado.pdf", "verified": false}
+```
+
+`kind` is `pades`, `xades` or `cades`, the same words the Python API uses. `verified` says whether
+`--verify` ran and passed.
+
+A batch reports every input in `files`, the data behind the OK / SIGNED / ERROR lines:
+
+```json
+{"schema_version": 2, "ok": false, "signed": 2, "total": 3, "errors": 1, "warnings": 0, "files": [
+  {"input": "docs/a.pdf", "output": "signed/a_firmado.pdf", "status": "ok", "kind": "pades",
+   "verified": false},
+  {"input": "docs/b.xml", "output": "signed/b_firmado.xml", "status": "error", "kind": "xades",
+   "error_code": "output_exists", "error": "..."},
+  {"input": "docs/c.zip", "output": "signed/c.zip.p7s", "status": "ok", "kind": "cades",
+   "verified": false}]}
+```
+
+`status` is `ok`, `error`, or `signed`: signed and committed, but its permissions could not be set,
+with `warning` saying why. `kind` appears only in `sign-batch`, the one that mixes types, and
+`output` is `null` for an input whose type could not be detected. `ok` is `false` as soon as one
+file is not `ok`, matching the non-zero exit.
+
+Any failure, in these commands and in the verify commands, is reported the same way:
+
+```json
+{"schema_version": 2, "ok": false, "error_code": "incorrect_pin", "error": "Incorrect PIN."}
+```
+
+`error_code` is one of `incorrect_pin`, `pin_locked`, `pin_error`, `reader_not_found`,
+`card_not_found`, `token_not_found`, `certificate_not_found`, `certificate_not_valid`,
+`certificate_error`, `signing_key_not_found`, `output_exists`, `output_committed`,
+`output_access_control`, `post_sign_verification_failed`, `detached_original_required`,
+`file_not_found`, `invalid_argument`, or `operation_failed` for anything else. Codes may be added
+later, so treat one you do not know like `operation_failed`.
+
 ## Verify a signed file (auto-detect)
 
 If you do not want to pick the right `verify-*` command, `verify` auto-detects the format by
@@ -628,8 +674,9 @@ The `signer` and `issuer` fields are structured:
    "checks": [{"name": "...", "ok": true, "detail": ""}]}]}
 ```
 
-On a hard error (e.g. malformed input), stdout is `{"schema_version": 2, "error": "..."}` and the
-exit code is `1`.
+On a hard error (e.g. malformed input), stdout is
+`{"schema_version": 2, "ok": false, "error_code": "...", "error": "..."}` and the exit code is `1`.
+The codes are the ones listed under [JSON output](#json-output---json) for signing.
 
 **The timestamp block.** `timestamp` is `null` when the signature carries none, which is the
 common case: the standard cédula flow signs at the BES level. When there is one it is an object,
@@ -714,7 +761,8 @@ timestamping authority, none of which is about the cardholder.
 The top-level `"redacted"` flag is present (as `false` by default) on the result record of every
 command that supports `--redact` (`verify-*`, `list-certs`, `fetch-identity`, `fetch-photo`), so a
 consumer can detect a redacted record uniformly. The verify hard-error envelope
-(`{"schema_version": 2, "error": "..."}`) carries no data, so it has no `redacted` field.
+(`{"schema_version": 2, "ok": false, "error_code": "...", "error": "..."}`) carries no data, so
+it has no `redacted` field.
 
 Revocation (CRL/OCSP) is **off by default** (offline). Enable it with `--check-revocation`,
 which fetches revocation data and fails the chain if the certificate is revoked or that data

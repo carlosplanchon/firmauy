@@ -2969,3 +2969,112 @@ def test_every_post_sign_outcome_is_one_the_contract_names(tmp_path):
     assert used == named, f"an outcome the contract names but nothing raises: {named - used}"
 
     assert PostSignVerificationError("x").covers is None
+
+
+# --- --json for signing: per-file results, and every failure on stdout -------
+
+def test_error_codes_follow_the_class_hierarchy():
+    """Keyed on classes, so a subclass nobody listed still gets its parent's code, and renaming a
+    class cannot quietly change what a script reads."""
+    import typer
+
+    from firmauy.cli import _error_code
+    from firmauy.errors import IncorrectPinError, OutputExistsError, PinError
+
+    class SomeNewPinError(PinError):
+        pass
+
+    assert _error_code(IncorrectPinError("x")) == "incorrect_pin"
+    assert _error_code(SomeNewPinError("x")) == "pin_error"
+    assert _error_code(OutputExistsError("x")) == "output_exists"
+    assert _error_code(typer.BadParameter("x")) == "invalid_argument"
+    assert _error_code(RuntimeError("x")) == "operation_failed"
+
+
+def test_sign_batch_json_reports_each_file(monkeypatch, tmp_path):
+    """Counts alone cannot tell a script which file failed or why, which is the reason to ask a
+    batch for JSON in the first place."""
+    from firmauy.errors import OutputExistsError
+
+    _patch_signing(monkeypatch)
+
+    def refuse(**kwargs):
+        raise OutputExistsError("Output file already exists.")
+
+    monkeypatch.setattr(cli, "_sign_one_xml", refuse)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    (src / "b.xml").write_bytes(b"<r/>")
+    (src / "c.zip").write_bytes(b"PKbin")
+
+    r = runner.invoke(app, ["sign-batch", "--input-dir", str(src),
+                            "--output-dir", str(tmp_path / "out"), "--json"])
+    assert r.exit_code == 1
+    out = json.loads(r.stdout)
+    assert (out["ok"], out["signed"], out["errors"], out["total"]) == (False, 2, 1, 3)
+    files = {f["input"].rsplit("/", 1)[-1]: f for f in out["files"]}
+    assert files["a.pdf"]["status"] == "ok" and files["a.pdf"]["kind"] == "pades"
+    assert files["c.zip"]["status"] == "ok" and files["c.zip"]["kind"] == "cades"
+    assert files["b.xml"]["status"] == "error"
+    assert files["b.xml"]["error_code"] == "output_exists"
+    assert files["b.xml"]["error"] == "Output file already exists."
+
+
+def test_json_failures_reach_stdout(monkeypatch, tmp_path):
+    """A script reading --json output should never have to read stderr to learn why it failed:
+    not for a check the command makes itself, nor for an error from deeper down."""
+    from contextlib import contextmanager
+
+    from firmauy.errors import CardNotFoundError
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    r = runner.invoke(app, ["sign-pdf-batch", "--input-dir", str(empty),
+                            "--output-dir", str(tmp_path / "o1"), "--json"])
+    assert r.exit_code == 1
+    assert json.loads(r.stdout) == {
+        "schema_version": 2, "ok": False, "error_code": "invalid_argument",
+        "error": "No input files specified. Use positional arguments or --input-dir.",
+    }
+
+    @contextmanager
+    def no_card(**kwargs):
+        raise CardNotFoundError("No card in the reader.")
+        yield
+
+    monkeypatch.setattr(cli, "_signing_session", no_card)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    r = runner.invoke(app, ["sign-batch", "--input-dir", str(src),
+                            "--output-dir", str(tmp_path / "o2"), "--json"])
+    assert r.exit_code == 1
+    assert json.loads(r.stdout)["error_code"] == "card_not_found"
+
+    bad = tmp_path / "bad.pem"
+    bad.write_text("not a certificate\n")
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    r = runner.invoke(app, ["fetch-cas", "--from-file", str(bad), "--json"])
+    assert r.exit_code == 1
+    failure = json.loads(r.stdout)
+    assert failure["ok"] is False and "not a PEM/DER certificate" in failure["error"]
+
+
+def test_sign_json_names_the_kind_like_the_api(monkeypatch, tmp_path):
+    """`sign` dispatches on internal names ("any" for CAdES). The JSON uses the ones sign-any and
+    the API's SignReport use."""
+    _patch_signing(monkeypatch)
+    target = tmp_path / "c.zip"
+    target.write_bytes(b"PKbin")
+    r = runner.invoke(app, ["sign", str(target), "--json"])
+    assert r.exit_code == 0, r.output
+    assert json.loads(r.stdout)["kind"] == "cades"
+
+
+def test_list_readers_json_keeps_the_exit_status(monkeypatch):
+    """No reader is a failure without --json, and --json does not change exit codes."""
+    monkeypatch.setattr(cli, "list_readers", lambda: [])
+    r = runner.invoke(app, ["list-readers", "--json"])
+    assert r.exit_code == 1
+    assert json.loads(r.stdout) == {"schema_version": 2, "readers": []}

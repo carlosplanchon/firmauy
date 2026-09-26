@@ -29,6 +29,7 @@ from firmauy.verify_common import (
     VerifyResult,
     muted_path_building_warnings,
     note_trusted_time,
+    revocation_fetcher_backend,
     timestamp_of,
 )
 
@@ -166,6 +167,7 @@ def verify_cms(
             other_certs=to_asn1_certs(intermediates),
             allow_fetching=check_revocation,
             revocation_mode="hard-fail" if check_revocation else "soft-fail",
+            fetcher_backend=revocation_fetcher_backend(check_revocation),
             # Only a *trusted* token moves the moment. An untrusted genTime is a claim by a
             # stranger, and letting it choose the day the signing certificate is checked on would
             # hand that choice to whoever could alter the file.

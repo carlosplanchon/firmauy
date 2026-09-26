@@ -19,6 +19,11 @@ updates:
         update-types:
           - "minor"
           - "patch"
+    ignore:
+      # Every pyhanko[pkcs11] release so far requires python-pkcs11 below 0.10, so a bump past
+      # it cannot resolve and turns the weekly run red. Drop this once pyHanko relaxes the pin.
+      - dependency-name: "python-pkcs11"
+        versions: [">=0.10"]
 
   # GitHub Actions used by the CI and release workflows.
   - package-ecosystem: "github-actions"

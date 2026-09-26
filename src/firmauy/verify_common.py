@@ -76,6 +76,23 @@ _TST_ATTR = "signature_time_stamp_token"
 CHAIN_CHECK = "certificate chain to trusted root"
 
 
+def revocation_fetcher_backend(check_revocation: bool):
+    """The fetcher backend for the signer's chain: requests when revocation is checked, else None.
+
+    pyhanko-certvalidator 0.32 moved its default from requests to an aiohttp session that ignores
+    HTTP_PROXY and HTTPS_PROXY. --check-revocation fetched CRLs, OCSP responses and missing
+    issuers through requests until then, and where the only way out is a proxy, a silent change
+    of client turns every one of those checks into a hard failure. Naming the backend keeps what
+    this tool shipped with, on the same client as the TSA request. None when nothing is fetched,
+    so the offline default builds exactly the context it always did.
+    """
+    if not check_revocation:
+        return None
+    from pyhanko_certvalidator.fetchers.requests_fetchers import RequestsFetcherBackend
+
+    return RequestsFetcherBackend()
+
+
 def note_trusted_time(checks, trusted_time) -> None:
     """Record on the chain row that it was judged at the timestamp's moment rather than at now.
 

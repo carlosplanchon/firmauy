@@ -33,6 +33,7 @@ from firmauy.verify_common import (
     VerifyResult,
     evaluate_timestamp,
     note_trusted_time,
+    revocation_fetcher_backend,
 )
 from firmauy.xml_sign import (
     MAX_XML_BYTES,
@@ -75,6 +76,7 @@ def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -
         other_certs=to_asn1_certs(intermediates),
         allow_fetching=check_revocation,
         revocation_mode="hard-fail" if check_revocation else "soft-fail",
+        fetcher_backend=revocation_fetcher_backend(check_revocation),
         moment=at_time,
     )
     validator = CertificateValidator(

@@ -27,6 +27,7 @@ from firmauy.verify_common import (
     VerifyResult,
     muted_path_building_warnings,
     note_trusted_time,
+    revocation_fetcher_backend,
     timestamp_of,
 )
 
@@ -145,6 +146,7 @@ def verify_pdf(
             other_certs=to_asn1_certs(intermediates),
             allow_fetching=check_revocation,
             revocation_mode="hard-fail" if check_revocation else "soft-fail",
+            fetcher_backend=revocation_fetcher_backend(check_revocation),
             moment=moment,
         )
 

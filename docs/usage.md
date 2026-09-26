@@ -591,7 +591,7 @@ longer matching the document, because the earlier digest was computed before the
 existed. That is the verdict every validator following the specification gives, and the reason
 `sign-xml` refuses to produce such a file.
 
-> **Changed in 1.18.0:** every digest used to be computed over the document with *all* signatures
+> **Changed in 1.17.2:** every digest used to be computed over the document with *all* signatures
 > removed, a convention of this tool's own, so two firmauy signatures on one XML verified with
 > firmauy and with nothing else, and a document countersigned by another tool did not verify here.
 > Signing and verification now follow the transform as specified. A document with one signature,

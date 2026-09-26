@@ -470,6 +470,11 @@ TSA timestamping is **optional** and **not required** for the standard Uruguayan
 
 > Any public RFC 3161 TSA works here for a **technical** timestamp. A *qualified* timestamp requires credentials from an accredited provider (which is what `--tsa-user` / `--tsa-header` / `--tsa-header-env` are for). Client-certificate (mTLS) TSAs are **not** supported.
 
+The TSA request follows the outbound policy described under
+[Common verification options and output](#common-verification-options-and-output): the TSA has to
+be at a public address, a redirect is refused, and the exchange has 30 seconds and 4 MiB. For a TSA
+inside your own network, pass `--allow-private-network`.
+
 ### Signing sanity check (`--verify`) vs full verification
 
 These are two different things, and the distinction matters:
@@ -575,7 +580,7 @@ firmauy verify sig.p7s --original /path/to/document   # or point at the original
 
 A PDF and an XML are self-contained, so a single argument is enough. A detached `.p7s` also
 needs its original file: by default the `<x>.p7s` → `<x>` name is used, or pass `--original`.
-The same `--no-trust`, `--check-revocation`, `--tsa-ca`, `--json`,
+The same `--no-trust`, `--check-revocation`, `--allow-private-network`, `--tsa-ca`, `--json`,
 `--json-pretty` and `--redact` options apply (all detailed in
 [Common verification options and output](#common-verification-options-and-output)). The specific
 commands below remain available (clearer for scripts that know the format).
@@ -799,6 +804,29 @@ cannot be obtained.
 > ⚠️ For **cédula** signatures, `--check-revocation` needs every CRL endpoint in the chain reachable
 > at check time, and has not been confirmed end-to-end. The default (no `--check-revocation`) is fully
 > offline. Details in [docs/trust-anchors.md](trust-anchors.md).
+
+**Outbound policy.** The `--check-revocation` fetches (CRLs, OCSP responses, and issuer
+certificates from AIA URLs) and the `--tsa-url` request go to public addresses only. Those URLs can
+come from a document, or from a certificate that is not trusted yet, so an address on loopback, on
+a private network or link-local (where cloud metadata answers) is refused before anything is sent.
+A refused revocation fetch is named in the chain row, and a refused TSA fails the signing with the
+reason. The name is resolved once and the
+connection goes to that address, so a DNS answer that changes in between (rebinding) cannot steer
+it elsewhere. `--allow-private-network` admits loopback and private networks, for an internal TSA
+or CRL/OCSP mirror. Link-local stays refused even then.
+
+Revocation fetches follow at most 3 redirects, each one vetted like the first request. The
+Ministerio del Interior's CRL, for one, redirects from `http://` to `https://`. The TSA request
+follows none. Each request is capped: a CRL at 64 MiB and 5 minutes, an OCSP response
+or issuer certificate at 1 MiB and 30 seconds, the TSA answer at 4 MiB and 30 seconds, and one
+verification at 32 requests and 128 MiB in all. A server that sends slowly is cut off when its
+time is up. Name resolution is the one step these limits do not cover.
+
+A proxy set in `HTTP_PROXY` or `HTTPS_PROXY` is used, and `NO_PROXY` is honoured. The proxy's own
+address is not vetted, since you chose it. The destination is checked by a local lookup first:
+refused if it resolves to an internal address, passed on if it does not resolve locally. Behind a
+proxy, protection against rebinding is the proxy's job. `~/.netrc` is never read for these
+requests.
 
 **Trust anchors.** The national root and intermediate CA certificates are **bundled** with the
 package and verified against pinned SHA-256 fingerprints before use, so chain validation works

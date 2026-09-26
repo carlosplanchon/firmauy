@@ -82,10 +82,26 @@ data cannot be obtained.
 
 For **cédula** signatures this needs the Ministerio del Interior CRL endpoint
 (`ca.minterior.gub.uy/crls/`) and the national root's CRL (`acrn.crl` on AGESIC/UCE). When last
-checked (2026-07-03) both returned `HTTP 200` (the cédula CRL is a ~13 MB file), so the chain's
-revocation data was reachable. Revocation is `hard-fail`, so every CRL in the chain must be reachable
-at check time or the chain fails, and this has not been re-confirmed end-to-end against a live cédula
-signature. The default (no `--check-revocation`) stays fully offline.
+checked (2026-09-26) both returned `HTTP 200`, so the chain's revocation data was reachable.
+Revocation is `hard-fail`, so every CRL in the chain must be reachable at check time or the chain
+fails, and this has not been re-confirmed end-to-end against a live cédula signature. The default
+(no `--check-revocation`) stays fully offline.
+
+The fetches go through the outbound policy described in
+[docs/usage.md](usage.md#common-verification-options-and-output): public addresses only, a few
+vetted redirects, and a size and time limit on each request. The limits come from what these
+endpoints served on 2026-09-26:
+
+| CRL | Size | Over `http://` |
+|---|---|---|
+| `ca.minterior.gub.uy/crls/crl.crl` (cédulas) | 13,208,654 bytes (12.6 MiB), reissued every 24 hours | 302 to `https://` |
+| `ca.minterior.gub.uy/crls/crlmicaa1.crl` | 952 bytes | 200 |
+| `ca.minterior.gub.uy/crls/crlmicac1.crl` | 1,926 bytes | 200 |
+| `acrn.crl` (national root, AGESIC and UCE) | 991 bytes | 200 |
+
+A CRL may take up to 64 MiB, about five times the cédula CRL, which grows as certificates are
+revoked, and up to 5 minutes, enough for 12.6 MiB at about 350 kbit/s. The redirect from `http://`
+to `https://` is why revocation fetches follow redirects at all.
 
 ## Validity over time
 

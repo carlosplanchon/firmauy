@@ -23,6 +23,8 @@ engine        firmauy.signing      the card-signing sessions and per-format sign
               verification         pdf_verify, xml_verify, cms_verify, verify_common
               card access          card_reader (PC/SC, public AIS data), native_card (APDU signing)
               PKCS#11              pkcs11_utils (module/token/certificate access)
+              network              outbound (the TSA request and the revocation fetches),
+                                   revocation_fetchers
               support              cms_sign, xml_sign, appearance, cert_utils, national_ca,
                                    ci, constants, errors
 ```
@@ -97,9 +99,19 @@ Two deliberate rules:
 
 ## Trust
 
-Verification is offline and needs no card. Trust anchors resolve in order: an explicit CA file,
-else the per-user cached copy (refreshed by `fetch-cas`, pinned by fingerprint), else the
+Verification is offline by default and needs no card. Trust anchors resolve in order: an explicit
+CA file, else the per-user cached copy (refreshed by `fetch-cas`, pinned by fingerprint), else the
 certificates bundled with the package. The details live in `docs/trust-anchors.md`.
+
+Two requests go out to URLs that firmauy is handed rather than ones it knows: the revocation
+fetches under `--check-revocation`, whose URLs come from the certificates a document carries, and
+the TSA request under `--tsa-url`. Both go through `firmauy.outbound` and nothing else: public
+destinations only (link-local never, loopback and private networks with
+`--allow-private-network`), the name resolved once and the socket pinned to the vetted address,
+limits on redirects, size and total time, and no `~/.netrc`. `revocation_fetchers` routes
+pyhanko-certvalidator's fetchers through it. A new request of that kind belongs there too. The
+exception is `fetch-cas`, which downloads from fixed official URLs and pins what it gets by
+fingerprint.
 
 ## Testing strategy
 

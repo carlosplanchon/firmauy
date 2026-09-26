@@ -26,6 +26,7 @@ from firmauy.verify_common import (
     Check,
     VerifyResult,
     muted_path_building_warnings,
+    note_refused_fetches,
     note_trusted_time,
     revocation_fetcher_backend,
     timestamp_of,
@@ -121,10 +122,12 @@ def verify_pdf(
     check_revocation: bool = False,
     tsa_trust_roots: Optional[list] = None,
     tsa_other_certs: Optional[list] = None,
+    allow_private_network: bool = False,
 ) -> list:
     """Verify every signature in a PDF. Returns a list of VerifyResult (one per
     signature). With `trust_roots`, also validates the chain (level 2); with
-    `check_revocation=True`, also CRL/OCSP (level 3).
+    `check_revocation=True`, also CRL/OCSP (level 3), fetched under the outbound policy
+    (:mod:`firmauy.outbound`), which ``allow_private_network`` relaxes for internal mirrors.
 
     ``tsa_trust_roots`` validates an RFC 3161 signature timestamp's own chain. Without it the
     timestamp is reported as present and unvalidated rather than as trusted or as broken. With it,
@@ -137,7 +140,7 @@ def verify_pdf(
         raise ValueError(f"PDF exceeds the {MAX_PDF_BYTES} byte limit; refusing to parse it")
     at = at_time or datetime.now(timezone.utc)
 
-    def signer_context(moment):
+    def signer_context(moment, backend):
         if not trust_roots:
             return ValidationContext(allow_fetching=False, revocation_mode="soft-fail",
                                      moment=moment)
@@ -146,7 +149,7 @@ def verify_pdf(
             other_certs=to_asn1_certs(intermediates),
             allow_fetching=check_revocation,
             revocation_mode="hard-fail" if check_revocation else "soft-fail",
-            fetcher_backend=revocation_fetcher_backend(check_revocation),
+            fetcher_backend=backend,
             moment=moment,
         )
 
@@ -176,9 +179,14 @@ def verify_pdf(
                 # Only a *trusted* token moves the moment. An untrusted genTime is a claim by a
                 # stranger, and letting it choose the day the signing certificate is checked on
                 # would hand that choice to whoever could alter the file.
-                status = validate_pdf_signature(emb, signer_context(trusted_time or at), ts_vc)
+                # One backend per signature: its own fetch budget, its own record of refusals.
+                backend = (revocation_fetcher_backend(check_revocation, allow_private_network)
+                           if trust_roots else None)
+                status = validate_pdf_signature(emb, signer_context(trusted_time or at, backend),
+                                                ts_vc)
                 result = _map_status(status, bool(trust_roots), info, ts_check)
                 note_trusted_time(result.checks, trusted_time)
+                note_refused_fetches(result.checks, backend)
                 if hybrid:
                     result.checks.append(Check(
                         "hybrid cross-reference sections: validated in relaxed mode", True,

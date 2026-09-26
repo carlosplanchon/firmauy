@@ -46,6 +46,15 @@ report = verify("data.bin.p7s", original="data.bin")
 Returns a `VerifyReport(indication, signatures)`, where each signature is a
 `firmauy.verify_common.VerifyResult`.
 
+`check_revocation=True` also fetches CRL and OCSP data, and any missing issuer certificate, and
+fails the chain when the certificate is revoked or that data cannot be obtained. Those URLs come
+from the certificates, so the fetches go to public addresses only, with caps on redirects, size and time (the
+[outbound policy](usage.md#common-verification-options-and-output)). A refused fetch is named in
+the chain check's `detail`. Pass `allow_private_network=True` to reach an internal CRL/OCSP mirror.
+
+> **Changed in 1.18.0:** revocation fetches go through the outbound policy and no longer read
+> `~/.netrc`. An internal mirror now needs `allow_private_network=True`.
+
 ### The signature timestamp
 
 `sig.timestamp` is a `firmauy.verify_common.TimestampInfo` when the signature carries an RFC 3161
@@ -149,7 +158,9 @@ handle it with care.
 - `native=False` uses a PKCS#11 module. `pkcs11_lib` is the module path (the bundled middleware by
   default, or e.g. OpenSC's `opensc-pkcs11.so`), `token_label` picks a token and `cert_id` pins the
   signing certificate.
-- `output` overrides the default `<input>.p7s` path. `tsa_url` adds an RFC 3161 timestamp.
+- `output` overrides the default `<input>.p7s` path. `tsa_url` adds an RFC 3161 timestamp. The
+  TSA has to be at a public address and must answer without a redirect. For an internal TSA, pass
+  `allow_private_network=True`, which every signing function takes. *New in 1.18.0.*
 - `verify=True` re-checks the fresh signature for integrity before returning.
 
 Returns a `SignReport(output_path, signer, issuer, kind, backend, certificate_serial, verified,

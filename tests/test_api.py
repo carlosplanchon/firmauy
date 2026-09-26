@@ -324,3 +324,37 @@ def test_verify_on_a_pdf_past_the_verify_limit_is_refused_before_the_card(monkey
 
     with pytest.raises(ValueError, match="Sign it without --verify"):
         sign_pdf(big, pin="1234", verify=True)
+
+
+def test_the_api_forwards_allow_private_network(monkeypatch, tmp_path):
+    """verify() hands it to the verifier, sign() to the per-format function, and sign_files() to
+    the timestamper, each before any card is touched."""
+    import firmauy.api as api
+    from firmauy import signing
+
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop here")
+
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+    doc = tmp_path / "doc.bin"
+    doc.write_bytes(b"contenido")
+
+    monkeypatch.setattr(api, "verify_pdf", _spy)
+    with pytest.raises(RuntimeError, match="stop here"):
+        api.verify(pdf, no_trust=True, allow_private_network=True)
+    assert seen.pop("allow_private_network") is True
+
+    monkeypatch.setattr(api, "sign_file", _spy)
+    with pytest.raises(RuntimeError, match="stop here"):
+        api.sign(doc, pin="1234", allow_private_network=True)
+    assert seen.pop("allow_private_network") is True
+
+    monkeypatch.setattr(signing, "_build_timestamper", _spy)
+    with pytest.raises(RuntimeError, match="stop here"):
+        api.sign_files([doc], pin="1234", tsa_url="https://tsa.example/tsr",
+                       allow_private_network=True)
+    assert seen.pop("allow_private_network") is True

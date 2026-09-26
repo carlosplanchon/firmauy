@@ -317,17 +317,21 @@ class _NoRedirectTimeStamper(TimeStamper):
     use, and a plain install stopped bringing requests at all. Owning the constructor as well as
     the request keeps these guarantees independent of the HTTP client pyHanko prefers in a given
     release, and is why requests is now a direct dependency instead of an inherited one.
+
+    The request itself goes through :mod:`firmauy.outbound`, like the revocation fetches: the TSA
+    has to be at a public address unless ``allow_private_network`` (--allow-private-network) is
+    set, a link-local one is refused either way, ``~/.netrc`` is never read, and the whole
+    exchange has 30 s and 4 MiB.
     """
 
     _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 
-    def __init__(self, url, *, timeout=5, auth=None, headers=None):
-        # timeout is in seconds, the same default pyHanko's HTTPTimeStamper uses.
+    def __init__(self, url, *, auth=None, headers=None, allow_private_network=False):
         super().__init__()
         self.url = url
-        self.timeout = timeout
         self.auth = auth
         self.headers = headers
+        self.allow_private_network = allow_private_network
 
     def request_headers(self) -> dict:
         # The media types RFC 3161 section 3.4 fixes for the HTTP transport. They win over a
@@ -341,65 +345,42 @@ class _NoRedirectTimeStamper(TimeStamper):
     async def async_request_tsa_response(self, req):
         from asyncio import to_thread
 
-        import requests
         from asn1crypto import tsp
         from pyhanko.sign.timestamps.common_utils import TimestampRequestError
 
+        from firmauy import outbound
+
         def task():
+            # Read at call time, so a test can lower it on the class.
+            limit = self._MAX_RESPONSE_BYTES
             try:
-                raw_res = requests.post(
-                    self.url,
-                    req.dump(),
-                    headers=self.request_headers(),
-                    auth=self.auth,
-                    timeout=self.timeout,
-                    allow_redirects=False,
-                    stream=True,
-                )
+                result = outbound.fetch(
+                    "POST", self.url,
+                    policy=outbound.tsa_policy(self.allow_private_network, max_bytes=limit),
+                    data=req.dump(), headers=self.request_headers(), auth=self.auth,
+                    expect_content_type="application/timestamp-reply")
+            except outbound.RedirectRefused as exc:
+                raise TimestampRequestError(
+                    f"The timestamp server answered {exc.status_code} (a redirect) instead of a "
+                    "timestamp. Refusing to follow it: a redirect can carry request headers, "
+                    "credentials among them, to a destination nobody asked for, and can downgrade "
+                    "to plain HTTP on the way. Point --tsa-url at the endpoint directly."
+                ) from exc
+            except outbound.UnexpectedContentType as exc:
+                raise TimestampRequestError("Timestamp server response is malformed.") from exc
+            except outbound.ResponseTooLarge as exc:
+                raise TimestampRequestError(
+                    f"Timestamp server response exceeds the {limit} byte limit; refusing to "
+                    "parse it."
+                ) from exc
+            except outbound.OutboundError as exc:
+                # A refused destination names --allow-private-network, a deadline its seconds.
+                raise TimestampRequestError(str(exc)) from exc
             except OSError as exc:
                 raise TimestampRequestError(
                     "Error in communication with timestamp server",
                 ) from exc
-            # Streamed, so the connection stays open until the body has been read or the response
-            # is closed, and every refusal below raises before reading it. Closed on every path,
-            # rather than whenever the garbage collector gets to it.
-            try:
-                if raw_res.is_redirect or raw_res.is_permanent_redirect:
-                    raise TimestampRequestError(
-                        f"The timestamp server answered {raw_res.status_code} (a redirect) "
-                        "instead of a timestamp. Refusing to follow it: a redirect can carry "
-                        "request headers, credentials among them, to a destination nobody asked "
-                        "for, and can downgrade to plain HTTP on the way. Point --tsa-url at the "
-                        "endpoint directly."
-                    )
-                if raw_res.headers.get("Content-Type") != "application/timestamp-reply":
-                    raise TimestampRequestError(
-                        "Timestamp server response is malformed.", raw_res
-                    )
-                content_length = raw_res.headers.get("Content-Length")
-                if content_length is not None:
-                    try:
-                        declared_length = int(content_length)
-                    except ValueError:
-                        raise TimestampRequestError(
-                            "Timestamp server response has an invalid Content-Length."
-                        ) from None
-                    if declared_length > self._MAX_RESPONSE_BYTES:
-                        raise TimestampRequestError(
-                            f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} "
-                            "byte limit; refusing to parse it."
-                        )
-                body = bytearray()
-                for chunk in raw_res.iter_content(chunk_size=64 * 1024):
-                    body.extend(chunk)
-                    if len(body) > self._MAX_RESPONSE_BYTES:
-                        raise TimestampRequestError(
-                            f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} "
-                            "byte limit; refusing to parse it."
-                        )
-                return tsp.TimeStampResp.load(bytes(body))
-            finally:
-                raw_res.close()
+            return tsp.TimeStampResp.load(result.content)
 
         return await to_thread(task)
 
@@ -412,6 +393,7 @@ def _build_timestamper(
     tsa_header: Optional[List[str]],
     tsa_header_env: Optional[List[str]],
     notify: Optional[Callable[[str], None]] = None,
+    allow_private_network: bool = False,
 ):
     """Build the TSA timestamper from the TSA options, or None when no --tsa-url is given.
 
@@ -420,12 +402,16 @@ def _build_timestamper(
     for a secret, read from an environment variable (``--tsa-header-env 'Name: ENV_VAR'``) so it
     never appears in argv. Passwords/secrets are never taken on the command line. Raises
     ``ValueError`` on inconsistent options. ``notify``, when given, receives the argv-visibility
-    warning for a literal header whose name looks like a credential (a CLI-only concern)."""
+    warning for a literal header whose name looks like a credential (a CLI-only concern), and the
+    note that ``allow_private_network`` does nothing without a TSA URL."""
     if tsa_url is None:
         if tsa_user or tsa_pass_env or tsa_header or tsa_header_env:
             raise ValueError(
                 "--tsa-user / --tsa-pass-env / --tsa-header / --tsa-header-env require --tsa-url."
             )
+        if allow_private_network and notify:
+            notify("Note: --allow-private-network only applies to the --tsa-url request, and no "
+                   "--tsa-url was given, so it is ignored here.")
         return None
 
     auth = None
@@ -517,7 +503,8 @@ def _build_timestamper(
             "request an anonymous timestamp."
         )
 
-    return _NoRedirectTimeStamper(tsa_url, auth=auth, headers=headers or None)
+    return _NoRedirectTimeStamper(tsa_url, auth=auth, headers=headers or None,
+                                  allow_private_network=allow_private_network)
 
 
 def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id,

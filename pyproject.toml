@@ -39,6 +39,7 @@ dependencies = [
     "reportlab>=5.0.0",
     "requests>=2.33.0",
     "typer>=0.26.8",
+    "urllib3>=2.6",
 ]
 
 [project.urls]

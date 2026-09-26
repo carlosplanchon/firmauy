@@ -33,6 +33,7 @@ from firmauy.verify_common import (
     VerifyResult,
     evaluate_timestamp,
     note_trusted_time,
+    refused_fetches_note,
     revocation_fetcher_backend,
 )
 from firmauy.xml_sign import (
@@ -57,7 +58,8 @@ def _leaf_cert(sig) -> tuple:
     return x509.load_der_x509_certificate(der), der
 
 
-def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -> tuple[bool, str]:
+def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False,
+                  allow_private_network=False) -> tuple[bool, str]:
     """Full RFC 5280 path validation via pyhanko_certvalidator.
 
     Validates the chain to a trusted root (signatures, validity, basicConstraints,
@@ -65,18 +67,20 @@ def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -
 
     - Level 2 (default): no revocation (`allow_fetching=False`, `soft-fail`).
     - Level 3 (`check_revocation=True`): fetch CRL/OCSP and `hard-fail` (revoked or
-      unavailable revocation info fails the chain). Requires network.
+      unavailable revocation info fails the chain). Requires network. The fetches go through the
+      outbound policy (:mod:`firmauy.outbound`), and what it refused is appended to the detail.
     """
     import asyncio
 
     from pyhanko_certvalidator import CertificateValidator, ValidationContext
 
+    backend = revocation_fetcher_backend(check_revocation, allow_private_network)
     vc = ValidationContext(
         trust_roots=to_asn1_certs(roots),
         other_certs=to_asn1_certs(intermediates),
         allow_fetching=check_revocation,
         revocation_mode="hard-fail" if check_revocation else "soft-fail",
-        fetcher_backend=revocation_fetcher_backend(check_revocation),
+        fetcher_backend=backend,
         moment=at_time,
     )
     validator = CertificateValidator(
@@ -86,12 +90,16 @@ def _verify_chain(leaf, intermediates, roots, at_time, check_revocation=False) -
     )
     try:
         asyncio.run(validator.async_validate_path())
+        ok = True
         detail = "RFC 5280 path validated to trusted root"
         if check_revocation:
             detail += " (revocation checked: not revoked)"
-        return True, detail
     except Exception as exc:
-        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+        ok = False
+        detail = f"{type(exc).__name__}: {str(exc)[:120]}"
+    # After the truncation above, which would otherwise cut the one clause that says why.
+    refused = refused_fetches_note(backend)
+    return ok, f"{detail}; {refused}" if refused else detail
 
 
 # Check name when no --tsa-ca was given: the token *binds* to this signature, but the TSA's own
@@ -157,13 +165,15 @@ def verify_xml(
     check_revocation: bool = False,
     tsa_trust_roots: Optional[list] = None,
     tsa_other_certs: Optional[list] = None,
+    allow_private_network: bool = False,
 ) -> list[VerifyResult]:
     """Verify every <ds:Signature> in a XAdES-BES/-T document, returning one VerifyResult per
     signature (like verify_pdf) -- or a single INVALID result if the document carries none. The
     caller aggregates them (worst indication wins).
 
     If `trust_roots` is given, each signature's certificate chain is also validated (level 2); with
-    `check_revocation=True` it also checks CRL/OCSP (level 3, needs network). Otherwise only
+    `check_revocation=True` it also checks CRL/OCSP (level 3, needs network, under the outbound
+    policy that `allow_private_network` relaxes for internal mirrors). Otherwise only
     integrity (level 1). With `tsa_trust_roots` (from --tsa-ca) a XAdES-T timestamp's TSA is
     validated; on success the signing certificate is evaluated at the trusted genTime instead of now
     (validation at the sealed time, not the AdES -LT/-LTA levels)."""
@@ -179,7 +189,7 @@ def verify_xml(
         _verify_signature(
             root, sig, trust_roots=trust_roots, intermediates=intermediates, at_time=at_time,
             check_revocation=check_revocation, tsa_trust_roots=tsa_trust_roots,
-            tsa_other_certs=tsa_other_certs,
+            tsa_other_certs=tsa_other_certs, allow_private_network=allow_private_network,
         )
         for sig in sigs
     ]
@@ -195,6 +205,7 @@ def _verify_signature(
     check_revocation: bool = False,
     tsa_trust_roots: Optional[list] = None,
     tsa_other_certs: Optional[list] = None,
+    allow_private_network: bool = False,
 ) -> VerifyResult:
     """Verify one already-located <ds:Signature> element. The document-level enveloped digest is
     computed over `root` with `sig` removed and every other signature left in place, which is the
@@ -283,7 +294,8 @@ def _verify_signature(
     trusted = False
     if level1_ok and trust_roots:
         at = trusted_time or at_time or datetime.now(timezone.utc)
-        ok, detail = _verify_chain(cert, intermediates or [], trust_roots, at, check_revocation)
+        ok, detail = _verify_chain(cert, intermediates or [], trust_roots, at, check_revocation,
+                                   allow_private_network)
         checks.append(Check(CHAIN_CHECK, ok, detail))
         note_trusted_time(checks, trusted_time)
         trusted = ok

@@ -497,6 +497,7 @@ dependencies = [
     { name = "reportlab" },
     { name = "requests" },
     { name = "typer" },
+    { name = "urllib3" },
 ]
 
 [package.dev-dependencies]
@@ -519,6 +520,7 @@ requires-dist = [
     { name = "reportlab", specifier = ">=5.0.0" },
     { name = "requests", specifier = ">=2.33.0" },
     { name = "typer", specifier = ">=0.26.8" },
+    { name = "urllib3", specifier = ">=2.6" },
 ]
 
 [package.metadata.requires-dev]

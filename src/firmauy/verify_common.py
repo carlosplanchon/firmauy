@@ -76,21 +76,47 @@ _TST_ATTR = "signature_time_stamp_token"
 CHAIN_CHECK = "certificate chain to trusted root"
 
 
-def revocation_fetcher_backend(check_revocation: bool):
-    """The fetcher backend for the signer's chain: requests when revocation is checked, else None.
+def revocation_fetcher_backend(check_revocation: bool, allow_private_network: bool = False):
+    """The fetcher backend for the signer's chain, or None when revocation is not checked.
 
-    pyhanko-certvalidator 0.32 moved its default from requests to an aiohttp session that ignores
-    HTTP_PROXY and HTTPS_PROXY. --check-revocation fetched CRLs, OCSP responses and missing
-    issuers through requests until then, and where the only way out is a proxy, a silent change
-    of client turns every one of those checks into a hard failure. Naming the backend keeps what
-    this tool shipped with, on the same client as the TSA request. None when nothing is fetched,
-    so the offline default builds exactly the context it always did.
+    None keeps the offline default building exactly the context it always did. Otherwise every
+    CRL, OCSP and AIA request goes through :mod:`firmauy.outbound`: requests, as before, so
+    HTTP_PROXY and HTTPS_PROXY are honoured (pyhanko-certvalidator 0.32 moved its own default to
+    an aiohttp session that ignores them), and under the outbound policy, because those URLs come
+    from certificates, some of them not trusted yet. Internal destinations take
+    ``allow_private_network`` (--allow-private-network). One backend per verified signature, so
+    each has its own budget and its own record of what was refused.
     """
     if not check_revocation:
         return None
-    from pyhanko_certvalidator.fetchers.requests_fetchers import RequestsFetcherBackend
+    from firmauy.revocation_fetchers import PolicyFetcherBackend
 
-    return RequestsFetcherBackend()
+    return PolicyFetcherBackend(allow_private_network)
+
+
+def refused_fetches_note(backend) -> str:
+    """What the outbound policy refused while this chain was checked, as a clause for its row.
+
+    Empty when nothing was refused, or when nothing was fetched at all (``backend`` None). Without
+    it, the row only says the chain was not trusted, and certvalidator's own reason stops at
+    "Failure to fetch CRL from URL ...": a refusal by firmauy would read like an outage, with
+    nothing pointing at --allow-private-network.
+    """
+    refusals = getattr(backend, "refusals", None)
+    if not refusals:
+        return ""
+    more = f" (and {len(refusals) - 1} more)" if len(refusals) > 1 else ""
+    return f"revocation fetch refused by the outbound policy{more}: {refusals[0]}"
+
+
+def note_refused_fetches(checks, backend) -> None:
+    """Record on the chain row what the outbound policy refused, like :func:`note_trusted_time`."""
+    note = refused_fetches_note(backend)
+    if not note:
+        return
+    for check in checks:
+        if check.name == CHAIN_CHECK:
+            check.detail = f"{check.detail}; {note}" if check.detail else note
 
 
 def note_trusted_time(checks, trusted_time) -> None:

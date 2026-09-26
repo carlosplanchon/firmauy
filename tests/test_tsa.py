@@ -230,7 +230,8 @@ def test_a_redirect_is_refused_and_the_headers_never_arrive():
         # http before this layer is reached. Two independent defences deserve separate tests: the
         # scheme guard covers the URL the user typed, and this one covers where it sends them.
         stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/secure",
-                                         headers={"X-Api-Key": "s3cret-key"})
+                                         headers={"X-Api-Key": "s3cret-key"},
+                                         allow_private_network=True)
         req = tsp.TimeStampReq({
             "version": 1,
             "message_imprint": tsp.MessageImprint({
@@ -282,7 +283,7 @@ def test_basic_auth_and_the_rfc3161_media_types_reach_the_tsa():
         # The subclass directly: the builder refuses credentials over http, and this test is about
         # what the request carries, not about that guard.
         stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/tsr",
-                                         auth=("alice", "s3cret"))
+                                         auth=("alice", "s3cret"), allow_private_network=True)
         req = tsp.TimeStampReq({
             "version": 1,
             "message_imprint": tsp.MessageImprint({
@@ -348,7 +349,8 @@ def test_oversized_tsa_response_is_rejected_before_asn1_parsing():
 
     srv = _tsa_server(Handler)
     try:
-        stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/tsr")
+        stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/tsr",
+                                         allow_private_network=True)
         req = tsp.TimeStampReq({
             "version": 1,
             "message_imprint": tsp.MessageImprint({
@@ -372,13 +374,15 @@ def test_the_tsa_response_is_closed_when_it_is_refused(monkeypatch):
     from firmauy.signing import _NoRedirectTimeStamper
 
     response = Mock(
+        status_code=200,
         is_redirect=False,
         is_permanent_redirect=False,
         headers={"Content-Type": "application/timestamp-reply"},
         iter_content=lambda chunk_size: [b"12345"],
     )
     monkeypatch.setattr(_NoRedirectTimeStamper, "_MAX_RESPONSE_BYTES", 4)
-    monkeypatch.setattr("requests.post", Mock(return_value=response))
+    # Where the request leaves firmauy.outbound for requests: the adapter, one hop at a time.
+    monkeypatch.setattr("requests.adapters.HTTPAdapter.send", Mock(return_value=response))
     req = tsp.TimeStampReq({
         "version": 1,
         "message_imprint": tsp.MessageImprint({
@@ -390,3 +394,47 @@ def test_the_tsa_response_is_closed_when_it_is_refused(monkeypatch):
     with pytest.raises(Exception, match="exceeds the 4 byte limit"):
         asyncio.run(_NoRedirectTimeStamper("http://tsa.example/tsr").async_request_tsa_response(req))
     response.close.assert_called_once_with()
+
+
+def test_a_tsa_on_a_private_address_is_refused_and_names_the_flag():
+    """The TSA is under the same outbound policy as the revocation fetches: a --tsa-url can come
+    from whoever configured the caller, so an internal address takes --allow-private-network."""
+    import asyncio
+    import http.server
+
+    from asn1crypto import tsp
+
+    hits = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            hits.append(self.path)
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    srv = _tsa_server(Handler)
+    try:
+        req = tsp.TimeStampReq({
+            "version": 1,
+            "message_imprint": tsp.MessageImprint({
+                "hash_algorithm": {"algorithm": "sha256"},
+                "hashed_message": b"\x00" * 32,
+            }),
+        })
+        stamper = _b(tsa_url=f"http://127.0.0.1:{srv.server_port}/tsr")
+        with pytest.raises(Exception, match="--allow-private-network"):
+            asyncio.run(stamper.async_request_tsa_response(req))
+    finally:
+        srv.shutdown()
+    assert hits == [], "the request reached the private address"
+
+
+def test_the_builder_passes_the_opt_in_on_and_notes_it_when_there_is_no_tsa():
+    notes = []
+    assert _b(tsa_url="https://tsa.example/tsr", allow_private_network=True).allow_private_network
+    assert not _b(tsa_url="https://tsa.example/tsr").allow_private_network
+    assert _b(allow_private_network=True, notify=notes.append) is None
+    assert any("--allow-private-network only applies" in n for n in notes)

@@ -196,6 +196,7 @@ NoStampIssuerOpt = Annotated[bool, typer.Option("--no-stamp-issuer", help="Leave
 NativeOpt = Annotated[bool, typer.Option("--native", help="Sign natively over PC/SC APDUs instead of PKCS#11: talk to the cédula directly, with no PKCS#11 middleware (--pkcs11-lib/--token-label are then ignored, and --cert-id is rejected, as the card has a single signing certificate). Experimental, not AGESIC-certified. Needs pcscd and a reader, not the PKCS#11 module.")]
 ReaderOpt = Annotated[Optional[str], typer.Option("--reader", help="PC/SC reader name (as shown by list-readers) for --native. Auto-detected when exactly one reader is present.")]
 AllowHybridXrefOpt = Annotated[bool, typer.Option("--allow-hybrid-xref", help="Sign PDFs that use hybrid cross-reference sections (opens the PDF non-strict). Off by default: such PDFs are rejected because the incremental signature may not be equivalent for all readers -- normalize with `qpdf in.pdf out.pdf` instead. Use at your own risk.")]
+AllowPrivateNetworkOpt = Annotated[bool, typer.Option("--allow-private-network", help="Let the --tsa-url request and the --check-revocation fetches reach loopback and private-network addresses. Refused by default, because those URLs can come from a document, a certificate or a redirect. Meant for an internal TSA or CRL/OCSP mirror. Link-local addresses, where cloud metadata answers, stay refused.")]
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +626,7 @@ def sign_pdf(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
@@ -657,6 +659,7 @@ def sign_pdf(
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
 
         if input_pdf.resolve() == output_pdf.resolve():
@@ -795,6 +798,7 @@ def sign_pdf_batch(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
@@ -824,6 +828,7 @@ def sign_pdf_batch(
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
 
         # Build (input, output) jobs. Files from --input-dir keep their sub-directory structure
@@ -1007,6 +1012,7 @@ def sign_xml_cmd(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1034,6 +1040,7 @@ def sign_xml_cmd(
             notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
 
         if dry_run:
@@ -1105,6 +1112,7 @@ def sign_xml_batch(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1118,6 +1126,7 @@ def sign_xml_batch(
             notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
         # (input, output) jobs: --input-dir files keep their sub-directory structure under
         # --output-dir (so equally-named files in different sub-folders do not collide when
@@ -1243,6 +1252,7 @@ def sign_any(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1261,6 +1271,7 @@ def sign_any(
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
 
         if input_file.resolve() == output_p7s.resolve():
@@ -1346,6 +1357,7 @@ def sign_any_batch(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
@@ -1365,6 +1377,7 @@ def sign_any_batch(
             tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
 
         # (input_file, output_p7s) jobs. Positional files are named by basename; files found
@@ -1529,6 +1542,7 @@ def sign_cmd(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
@@ -1587,6 +1601,7 @@ def sign_cmd(
             notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
 
         if kind == "pdf":
@@ -1700,6 +1715,7 @@ def sign_batch(
     tsa_pass_env: TsaPassEnvOpt = None,
     tsa_header: TsaHeaderOpt = None,
     tsa_header_env: TsaHeaderEnvOpt = None,
+    allow_private_network: AllowPrivateNetworkOpt = False,
     overwrite: OverwriteOpt = False,
     force: ForceOpt = False,
     quiet: QuietOpt = False,
@@ -1734,6 +1750,7 @@ def sign_batch(
             notify=_warn,
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
+            allow_private_network=allow_private_network,
         )
 
         # Gather (input, base): base is None for positionals, input_dir for dir-sourced (so
@@ -2102,6 +2119,7 @@ def verify_xml_cmd(
         False, "--check-revocation",
         help="Also check certificate revocation via CRL/OCSP (level 3). Requires network.",
     ),
+    allow_private_network: AllowPrivateNetworkOpt = False,
     tsa_ca: Optional[Path] = typer.Option(
         None, "--tsa-ca", exists=True, readable=True, dir_okay=False, help=_TSA_CA_OPT_HELP),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
@@ -2113,14 +2131,18 @@ def verify_xml_cmd(
 
     Indication: VALID (integrity + trusted chain), INDETERMINATE (integrity OK but
     chain not trusted/not checked), INVALID (signature broken or document modified).
-    Note: revocation (CRL/OCSP) is not checked. For XAdES-BES (no timestamp) the signing time is
-    self-asserted, so validity is evaluated at verification time; with --tsa-ca a XAdES-T timestamp
-    is trust-validated and the certificate is evaluated at the trusted timestamp time instead.
+    Revocation (CRL/OCSP) is checked only with --check-revocation. For XAdES-BES (no timestamp)
+    the signing time is self-asserted, so validity is evaluated at verification time. With
+    --tsa-ca, a XAdES-T timestamp is trust-validated and the certificate is evaluated at the
+    trusted timestamp time instead.
     """
     try:
         json_output = json_output or json_pretty
         if check_revocation and no_trust:
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+        if allow_private_network and not check_revocation:
+            _warn("Note: --allow-private-network only applies to the --check-revocation fetches, "
+                  "and --check-revocation was not given, so it is ignored here.")
 
         roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
         tsa_roots, tsa_others = _resolve_tsa_anchors(tsa_ca)
@@ -2132,6 +2154,7 @@ def verify_xml_cmd(
             check_revocation=check_revocation,
             tsa_trust_roots=tsa_roots,
             tsa_other_certs=tsa_others,
+            allow_private_network=allow_private_network,
         )
 
         overall = _emit_verify(results, json_output, pretty=json_pretty, redact=redact)
@@ -2167,6 +2190,7 @@ def verify_pdf_cmd(
         False, "--check-revocation",
         help="Also check certificate revocation via CRL/OCSP. Requires network.",
     ),
+    allow_private_network: AllowPrivateNetworkOpt = False,
     tsa_ca: Optional[Path] = typer.Option(
         None, "--tsa-ca", exists=True, readable=True, dir_okay=False, help=_TSA_CA_OPT_HELP),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
@@ -2183,6 +2207,9 @@ def verify_pdf_cmd(
         json_output = json_output or json_pretty
         if check_revocation and no_trust:
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+        if allow_private_network and not check_revocation:
+            _warn("Note: --allow-private-network only applies to the --check-revocation fetches, "
+                  "and --check-revocation was not given, so it is ignored here.")
 
         roots, intermediates = _resolve_trust_anchors(ca_file, no_trust, notify=_warn)
         tsa_roots, tsa_others = _resolve_tsa_anchors(tsa_ca)
@@ -2194,6 +2221,7 @@ def verify_pdf_cmd(
             check_revocation=check_revocation,
             tsa_trust_roots=tsa_roots,
             tsa_other_certs=tsa_others,
+            allow_private_network=allow_private_network,
         )
 
         overall = _emit_verify(results, json_output, pretty=json_pretty, redact=redact)
@@ -2230,6 +2258,7 @@ def verify_any_cmd(
         False, "--check-revocation",
         help="Also check certificate revocation via CRL/OCSP. Requires network.",
     ),
+    allow_private_network: AllowPrivateNetworkOpt = False,
     tsa_ca: Optional[Path] = typer.Option(
         None, "--tsa-ca", exists=True, readable=True, dir_okay=False, help=_TSA_CA_OPT_HELP),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
@@ -2249,6 +2278,9 @@ def verify_any_cmd(
         json_output = json_output or json_pretty
         if check_revocation and no_trust:
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+        if allow_private_network and not check_revocation:
+            _warn("Note: --allow-private-network only applies to the --check-revocation fetches, "
+                  "and --check-revocation was not given, so it is ignored here.")
         if not p7s_file.exists():
             raise RuntimeError(
                 f"Detached signature not found: {p7s_file}\n"
@@ -2269,6 +2301,7 @@ def verify_any_cmd(
                 check_revocation=check_revocation,
                 tsa_trust_roots=tsa_roots,
                 tsa_other_certs=tsa_others,
+                allow_private_network=allow_private_network,
             )
 
         overall = _emit_verify([result], json_output, pretty=json_pretty, redact=redact)
@@ -2310,6 +2343,7 @@ def verify_cmd(
         False, "--check-revocation",
         help="Also check certificate revocation via CRL/OCSP. Requires network.",
     ),
+    allow_private_network: AllowPrivateNetworkOpt = False,
     tsa_ca: Optional[Path] = typer.Option(
         None, "--tsa-ca", exists=True, readable=True, dir_okay=False, help=_TSA_CA_OPT_HELP),
     json_output: bool = typer.Option(False, "--json", help=_JSON_OPT_HELP),
@@ -2327,6 +2361,9 @@ def verify_cmd(
         json_output = json_output or json_pretty
         if check_revocation and no_trust:
             raise RuntimeError("--check-revocation requires the certificate chain; remove --no-trust.")
+        if allow_private_network and not check_revocation:
+            _warn("Note: --allow-private-network only applies to the --check-revocation fetches, "
+                  "and --check-revocation was not given, so it is ignored here.")
 
         kind = _detect_signature_kind(input_file)
 
@@ -2357,17 +2394,20 @@ def verify_cmd(
         if kind == "pdf":
             results = verify_pdf(input_file, trust_roots=roots, intermediates=intermediates,
                                  check_revocation=check_revocation,
-                                 tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
+                                 tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others,
+                                 allow_private_network=allow_private_network)
         elif kind == "xml":
             results = verify_xml(input_file.read_bytes(), trust_roots=roots,
                                  intermediates=intermediates, check_revocation=check_revocation,
-                                 tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
+                                 tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others,
+                                 allow_private_network=allow_private_network)
         else:  # cms / detached .p7s
             with orig.open("rb") as data:
                 results = [verify_cms(data, read_bounded(input_file, MAX_CMS_BYTES, "CMS signature"), trust_roots=roots,
                                       intermediates=intermediates,
                                       check_revocation=check_revocation,
-                                      tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)]
+                                      tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others,
+                                      allow_private_network=allow_private_network)]
 
         overall = _emit_verify(results, json_output, pretty=json_pretty, redact=redact)
         if overall == "INVALID":

@@ -3204,3 +3204,79 @@ def test_a_batch_passes_the_listing_identity_to_the_signer(monkeypatch, tmp_path
     assert r.exit_code == 0, r.output
     st = os.lstat(src / "a.pdf")
     assert seen == {"extra.pdf": None, "a.pdf": (st.st_dev, st.st_ino)}
+
+
+# --- --allow-private-network --------------------------------------------------------------------
+
+@pytest.mark.parametrize("command, verifier, name", [
+    ("verify-pdf", "verify_pdf", "a.pdf"), ("verify-xml", "verify_xml", "a.xml"),
+    ("verify-any", "verify_cms", "doc.bin"), ("verify", "verify_pdf", "a.pdf"),
+])
+def test_allow_private_network_reaches_the_verifier(tmp_path, monkeypatch, command, verifier, name):
+    """An accepted-and-ignored flag is worse than no flag: each verify command hands it on."""
+    import firmauy.cli as cli
+
+    seen = {}
+
+    def _spy(*args, **kwargs):
+        seen.update(kwargs)
+        raise RuntimeError("stop here")
+
+    monkeypatch.setattr(cli, verifier, _spy)
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    (tmp_path / "a.xml").write_bytes(b"<r/>")
+    (tmp_path / "doc.bin").write_bytes(b"contenido")
+    (tmp_path / "doc.bin.p7s").write_bytes(b"no importa")
+    ca = tmp_path / "ca.pem"
+    ca.write_bytes(_ANCHOR_PEM)
+
+    runner.invoke(app, [command, str(tmp_path / name), "--ca-file", str(ca),
+                        "--check-revocation", "--allow-private-network"])
+
+    assert seen.get("allow_private_network") is True, f"{command} dropped --allow-private-network"
+
+
+@pytest.mark.parametrize("argv", [
+    ["sign", "doc.bin"], ["sign-any", "doc.bin"], ["sign-pdf", "a.pdf"], ["sign-xml", "a.xml"],
+    ["sign-batch", "doc.bin", "--output-dir", "out"], ["sign-any-batch", "doc.bin", "--output-dir", "out"],
+    ["sign-pdf-batch", "a.pdf", "--output-dir", "out"], ["sign-xml-batch", "a.xml", "--output-dir", "out"],
+])
+def test_allow_private_network_reaches_the_timestamper(tmp_path, monkeypatch, argv):
+    import firmauy.cli as cli
+
+    seen = {}
+    real = cli._build_timestamper
+
+    def _spy(**kwargs):
+        seen.update(kwargs)
+        return real(**kwargs)
+
+    monkeypatch.setattr(cli, "_build_timestamper", _spy)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    (tmp_path / "a.xml").write_bytes(b"<r/>")
+    (tmp_path / "doc.bin").write_bytes(b"contenido")
+
+    r = runner.invoke(app, argv + ["--dry-run", "--tsa-url", "https://tsa.example/tsr",
+                                   "--allow-private-network"])
+
+    assert r.exit_code == 0, r.output
+    assert seen.get("allow_private_network") is True, f"{argv[0]} dropped --allow-private-network"
+
+
+def test_allow_private_network_without_what_it_applies_to_is_noted(tmp_path, monkeypatch):
+    """Given where it does nothing, it says so, on stderr, so --json output still parses."""
+    import firmauy.cli as cli
+
+    monkeypatch.setattr(cli, "verify_pdf", lambda *a, **k: [])
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"%PDF-1.7\n")
+    r = runner.invoke(app, ["verify-pdf", str(pdf), "--no-trust", "--allow-private-network"])
+    assert "only applies to the --check-revocation fetches" in r.output
+
+    doc = tmp_path / "doc.bin"
+    doc.write_bytes(b"contenido")
+    r = runner.invoke(app, ["sign-any", str(doc), "--dry-run", "--allow-private-network", "--json"])
+    assert r.exit_code == 0, r.output
+    assert "only applies to the --tsa-url request" in r.stderr
+    assert json.loads(r.stdout)["dry_run"] is True

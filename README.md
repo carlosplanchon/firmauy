@@ -248,7 +248,7 @@ It does not collect, transmit, or store any user data externally.
 
 All cryptographic operations are performed on the user's machine and/or the connected smart card.
 
-Note: Optional features such as timestamping (TSA) may involve external network requests, depending on user configuration.
+Note: Timestamping (`--tsa-url`) and revocation checking (`--check-revocation`) are optional and make network requests. Those go to public addresses only, with limits on redirects, size and time, and `--allow-private-network` admits an internal TSA or CRL/OCSP mirror. Details in [docs/usage.md](docs/usage.md#common-verification-options-and-output).
 
 Note: the signing commands print a summary that includes identifying data (signer name, certificate issuer, certificate serial number and PKCS#11 key ID). This stays on your machine, but in batch or automated pipelines that output can end up in CI or centralized logs. Pass `--quiet` (`-q`) to the `sign-pdf`, `sign-pdf-batch`, `sign-xml`, `sign-xml-batch`, `sign-any` and `sign-any-batch` commands to suppress that block while still signing.
 

@@ -310,6 +310,7 @@ def verify(
     no_trust: bool = False,
     check_revocation: bool = False,
     tsa_ca: Optional[Union[str, Path]] = None,
+    allow_private_network: bool = False,
 ) -> VerifyReport:
     """Verify a signed file (PDF, XAdES XML or detached CMS ``.p7s``), auto-detecting the format.
 
@@ -327,9 +328,17 @@ def verify(
     :class:`~firmauy.verify_common.TimestampInfo` on ``.timestamp``; read that rather than
     parsing check names, whose wording differs per format.
 
+    With ``check_revocation`` the CRL, OCSP and AIA requests go through the outbound policy of
+    :mod:`firmauy.outbound`: public destinations only, a few vetted redirects, bounded size and
+    time. ``allow_private_network`` admits loopback and private networks, for an internal mirror.
+    A refused request fails the chain, and its row says why.
+
     .. versionchanged:: 1.12.0
        ``tsa_ca`` used to apply to XML only, and the PDF and CMS verifiers discarded pyHanko's
        timestamp status entirely, so a broken timestamp went unmentioned.
+
+    .. versionchanged:: 1.18.0
+       Revocation fetches go through the outbound policy, and ``allow_private_network`` was added.
     """
     from firmauy._shared import (
         _INDICATION_RANK,
@@ -352,11 +361,13 @@ def verify(
     if kind == "pdf":
         results = verify_pdf(path, trust_roots=roots, intermediates=intermediates,
                              check_revocation=check_revocation,
-                             tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
+                             tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others,
+                             allow_private_network=allow_private_network)
     elif kind == "xml":
         results = verify_xml(path.read_bytes(), trust_roots=roots, intermediates=intermediates,
                              check_revocation=check_revocation,
-                             tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)
+                             tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others,
+                             allow_private_network=allow_private_network)
     else:  # cms / detached .p7s
         orig = Path(original) if original else _detached_original(path)
         if orig is None or not orig.exists():
@@ -367,7 +378,8 @@ def verify(
         with orig.open("rb") as data:
             results = [verify_cms(data, read_bounded(path, MAX_CMS_BYTES, "CMS signature"), trust_roots=roots,
                                   intermediates=intermediates, check_revocation=check_revocation,
-                                  tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others)]
+                                  tsa_trust_roots=tsa_roots, tsa_other_certs=tsa_others,
+                                  allow_private_network=allow_private_network)]
 
     overall = (max((r.indication for r in results), key=lambda ind: _INDICATION_RANK[ind])
                if results else "INDETERMINATE")
@@ -430,6 +442,7 @@ def sign_file(
     token_label: Optional[str] = None,
     cert_id: Optional[str] = None,
     tsa_url: Optional[str] = None,
+    allow_private_network: bool = False,
     overwrite: bool = False,
     verify: bool = False,
 ) -> SignReport:
@@ -449,8 +462,14 @@ def sign_file(
     ``native`` defaults to True (the PC/SC backend the desktop app uses), where ``reader`` picks a
     PC/SC reader. Set it False for a PKCS#11 module: ``pkcs11_lib`` is the module path (the bundled
     middleware by default, or e.g. OpenSC's ``opensc-pkcs11.so``), ``token_label`` picks a token and
-    ``cert_id`` (hex) pins the signing certificate. ``tsa_url`` adds an RFC 3161 timestamp. With
-    ``verify`` the fresh signature is re-checked for integrity (no trust) before returning.
+    ``cert_id`` (hex) pins the signing certificate. ``tsa_url`` adds an RFC 3161 timestamp, requested
+    under the outbound policy of :mod:`firmauy.outbound`: a TSA at a loopback or private address
+    takes ``allow_private_network``. With ``verify`` the fresh signature is re-checked for
+    integrity (no trust) before returning.
+
+    .. versionchanged:: 1.18.0
+       ``allow_private_network`` was added, and the TSA request goes through the outbound
+       policy.
     """
     from firmauy.signing import (
         _build_timestamper,
@@ -471,6 +490,7 @@ def sign_file(
 
     timestamper = _build_timestamper(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
+        allow_private_network=allow_private_network,
     )
 
     lib_path = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
@@ -507,6 +527,7 @@ def sign_pdf(
     reason: Optional[str] = None,
     location: Optional[str] = None,
     tsa_url: Optional[str] = None,
+    allow_private_network: bool = False,
     overwrite: bool = False,
     verify: bool = False,
     appearance: Optional[PdfAppearance] = None,
@@ -520,8 +541,13 @@ def sign_pdf(
 
     ``pin`` and the backend selection (``native``/``reader`` or
     ``pkcs11_lib``/``token_label``/``cert_id``) behave as in :func:`sign_file`. ``reason`` and
-    ``location`` fill the PAdES signature metadata. ``tsa_url`` adds an RFC 3161 timestamp. With
-    ``verify`` the fresh signature is re-checked for integrity and whole-file coverage.
+    ``location`` fill the PAdES signature metadata. ``tsa_url`` and ``allow_private_network``
+    behave as in :func:`sign_file`. With ``verify`` the fresh signature is re-checked for integrity
+    and whole-file coverage.
+
+    .. versionchanged:: 1.18.0
+       ``allow_private_network`` was added, and the TSA request goes through the outbound
+       policy.
     """
     from pyhanko.sign import signers
 
@@ -546,6 +572,7 @@ def sign_pdf(
 
     timestamper = _build_timestamper(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
+        allow_private_network=allow_private_network,
     )
 
     lib_path = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
@@ -586,6 +613,7 @@ def sign_xml(
     token_label: Optional[str] = None,
     cert_id: Optional[str] = None,
     tsa_url: Optional[str] = None,
+    allow_private_network: bool = False,
     overwrite: bool = False,
     verify: bool = False,
 ) -> SignReport:
@@ -593,7 +621,12 @@ def sign_xml(
 
     This is the programmatic form of ``sign-xml`` (XAdES-T when ``tsa_url`` is given). The output
     defaults to ``<name>_firmado.xml`` next to the input. Returns a :class:`SignReport`; raises on
-    any error. ``pin`` and the backend selection behave as in :func:`sign_file`.
+    any error. ``pin``, the backend selection, ``tsa_url`` and ``allow_private_network`` behave as
+    in :func:`sign_file`.
+
+    .. versionchanged:: 1.18.0
+       ``allow_private_network`` was added, and the TSA request goes through the outbound
+       policy.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -617,6 +650,7 @@ def sign_xml(
 
     timestamper = _build_timestamper(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
+        allow_private_network=allow_private_network,
     )
 
     lib_path = str(pkcs11_lib) if pkcs11_lib is not None else DEFAULT_PKCS11_LIB
@@ -655,6 +689,7 @@ def sign(
     reason: Optional[str] = None,
     location: Optional[str] = None,
     tsa_url: Optional[str] = None,
+    allow_private_network: bool = False,
     overwrite: bool = False,
     verify: bool = False,
     appearance: Optional[PdfAppearance] = None,
@@ -666,6 +701,10 @@ def sign(
     else as a detached CAdES ``.p7s``. Set ``sign_as`` to ``"pdf"``, ``"xml"`` or ``"cades"`` to
     force a type. ``reason``/``location`` only apply when the resolved type is a PDF. Returns a
     :class:`SignReport`; raises on any error.
+
+    .. versionchanged:: 1.18.0
+       ``allow_private_network`` was added, and the TSA request goes through the outbound
+       policy.
     """
     from firmauy.signing import _resolve_sign_kind
 
@@ -679,7 +718,7 @@ def sign(
     common = dict(
         output=output, native=native, reader=reader, pkcs11_lib=pkcs11_lib,
         token_label=token_label, cert_id=cert_id, tsa_url=tsa_url,
-        overwrite=overwrite, verify=verify,
+        allow_private_network=allow_private_network, overwrite=overwrite, verify=verify,
     )
     if kind == "pdf":
         # reason, location and appearance are the three that only mean something for a PDF, so
@@ -706,6 +745,7 @@ def sign_files(
     reason: Optional[str] = None,
     location: Optional[str] = None,
     tsa_url: Optional[str] = None,
+    allow_private_network: bool = False,
     overwrite: bool = False,
     verify: bool = False,
     progress: Optional[Callable[[int, Path, Path], None]] = None,
@@ -751,6 +791,10 @@ def sign_files(
     .. versionchanged:: 1.10.0
        Added ``progress``, and a partial batch now raises :class:`BatchSignError` instead of
        letting the underlying error through with the completed work lost.
+
+    .. versionchanged:: 1.18.0
+       ``allow_private_network`` was added, and the TSA request goes through the outbound
+       policy.
     """
     from datetime import datetime
     from zoneinfo import ZoneInfo
@@ -801,6 +845,7 @@ def sign_files(
 
     timestamper = _build_timestamper(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
+        allow_private_network=allow_private_network,
     )
 
     reports: list[SignReport] = []

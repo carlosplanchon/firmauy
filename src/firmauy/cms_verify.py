@@ -28,6 +28,7 @@ from firmauy.verify_common import (
     Check,
     VerifyResult,
     muted_path_building_warnings,
+    note_refused_fetches,
     note_trusted_time,
     revocation_fetcher_backend,
     timestamp_of,
@@ -138,12 +139,14 @@ def verify_cms(
     check_revocation: bool = False,
     tsa_trust_roots: Optional[list] = None,
     tsa_other_certs: Optional[list] = None,
+    allow_private_network: bool = False,
 ) -> VerifyResult:
     """Verify a detached CAdES/.p7s signature (``p7s_bytes``) over ``input_data``.
 
     With ``trust_roots`` it also validates the certificate chain (level 2); with
-    ``check_revocation=True`` it also checks CRL/OCSP (level 3, needs network).
-    Otherwise only integrity is checked (level 1).
+    ``check_revocation=True`` it also checks CRL/OCSP (level 3, needs network), fetched under the
+    outbound policy (:mod:`firmauy.outbound`), which ``allow_private_network`` relaxes for
+    internal mirrors. Otherwise only integrity is checked (level 1).
 
     ``tsa_trust_roots`` validates an RFC 3161 signature timestamp's own chain. Without it the
     timestamp is reported as present and unvalidated rather than as trusted or as broken. With it,
@@ -160,14 +163,15 @@ def verify_cms(
         timestamp_of(signer_infos[0], tsa_trust_roots, tsa_other_certs)
         if len(signer_infos) else (None, None, None))
 
-    vc = None
+    vc = backend = None
     if trust_roots:
+        backend = revocation_fetcher_backend(check_revocation, allow_private_network)
         vc = ValidationContext(
             trust_roots=to_asn1_certs(trust_roots),
             other_certs=to_asn1_certs(intermediates),
             allow_fetching=check_revocation,
             revocation_mode="hard-fail" if check_revocation else "soft-fail",
-            fetcher_backend=revocation_fetcher_backend(check_revocation),
+            fetcher_backend=backend,
             # Only a *trusted* token moves the moment. An untrusted genTime is a claim by a
             # stranger, and letting it choose the day the signing certificate is checked on would
             # hand that choice to whoever could alter the file.
@@ -183,4 +187,5 @@ def verify_cms(
         )
     result = _map_status(status, bool(trust_roots), info, ts_check)
     note_trusted_time(result.checks, trusted_time)
+    note_refused_fetches(result.checks, backend)
     return result

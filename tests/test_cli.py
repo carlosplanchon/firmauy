@@ -485,6 +485,23 @@ def test_batch_output_preserves_subdirs_and_avoids_collisions(tmp_path):
     assert o1 != o2
 
 
+def test_batch_input_rejects_symlinks_outside_input_dir(tmp_path):
+    from firmauy.cli import _batch_input_allowed
+
+    input_dir = tmp_path / "in"
+    input_dir.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_bytes(b"%PDF-1.7\n")
+    link = input_dir / "linked.pdf"
+    link.symlink_to(outside)
+
+    assert not _batch_input_allowed(link, input_dir)
+
+    regular = input_dir / "regular.pdf"
+    regular.write_bytes(b"%PDF-1.7\n")
+    assert _batch_input_allowed(regular, input_dir)
+
+
 def test_raise_on_output_collisions():
     from pathlib import Path
 

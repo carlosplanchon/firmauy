@@ -250,6 +250,16 @@ def _batch_output(p: Path, input_dir: Optional[Path], output_dir: Path, ext: str
     return output_dir / p.relative_to(input_dir).parent / name
 
 
+def _batch_input_allowed(path: Path, input_dir: Path) -> bool:
+    """Accept only regular, non-symlink files whose resolved path stays under ``input_dir``."""
+    if not path.is_file() or path.is_symlink():
+        return False
+    try:
+        return path.resolve(strict=True).is_relative_to(input_dir.resolve(strict=True))
+    except OSError:
+        return False
+
+
 def _raise_on_output_collisions(jobs: Iterable[tuple[Path, Path]]) -> None:
     """Fail fast (before the PIN) if two inputs map to the same output path. Without this a batch
     silently overwrites an earlier output with --overwrite, or fails mid-run without it. ``jobs`` is
@@ -645,7 +655,7 @@ def sign_pdf_batch(
                 raise typer.Exit(code=1)
             pattern = "**/*.pdf" if recursive else "*.pdf"
             for p in sorted(input_dir.glob(pattern)):
-                if p.is_file():
+                if _batch_input_allowed(p, input_dir):
                     jobs.append((p, _batch_output(p, input_dir, output_dir, ".pdf", suffix)))
 
         if not jobs:
@@ -922,7 +932,7 @@ def sign_xml_batch(
                 raise typer.Exit(code=1)
             pattern = "**/*.xml" if recursive else "*.xml"
             for p in sorted(input_dir.glob(pattern)):
-                if p.is_file():
+                if _batch_input_allowed(p, input_dir):
                     jobs.append((p, _batch_output(p, input_dir, output_dir, ".xml", suffix)))
 
         if not jobs:
@@ -1149,7 +1159,7 @@ def sign_any_batch(
                 raise typer.Exit(code=1)
             pattern = f"**/{glob}" if recursive else glob
             for p in sorted(input_dir.glob(pattern)):
-                if p.is_file():
+                if _batch_input_allowed(p, input_dir):
                     rel = p.relative_to(input_dir).as_posix()
                     jobs.append((p, output_dir / f"{rel}.p7s"))
 
@@ -1491,7 +1501,7 @@ def sign_batch(
                 raise typer.Exit(code=1)
             pattern = f"**/{glob}" if recursive else glob
             for p in sorted(input_dir.glob(pattern)):
-                if p.is_file():
+                if _batch_input_allowed(p, input_dir):
                     items.append((p, input_dir))
         if not items:
             typer.secho("No input files specified. Use positional arguments or --input-dir.",

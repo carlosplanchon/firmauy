@@ -305,3 +305,22 @@ def test_the_appearance_travels_from_sign_to_the_pdf_signer(monkeypatch, tmp_pat
     api.sign(pdf, "1234", appearance=wanted)
 
     assert seen["appearance"] is wanted
+
+
+def test_verify_on_a_pdf_past_the_verify_limit_is_refused_before_the_card(monkeypatch, tmp_path):
+    """The API has no channel for the warning the CLI prints, but the refusal reaches it, and
+    before the PIN."""
+    from firmauy import signing
+    from firmauy.api import sign_pdf
+
+    def no_session(**kwargs):
+        raise AssertionError("the card was reached")
+
+    monkeypatch.setattr(signing, "_signing_session", no_session)
+    monkeypatch.setattr(signing, "MAX_PDF_BYTES", 2000)
+    monkeypatch.setattr(signing, "_SIGNED_PDF_HEADROOM", 100)
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"%PDF-1.7\n" + b"0" * 1950)
+
+    with pytest.raises(ValueError, match="Sign it without --verify"):
+        sign_pdf(big, pin="1234", verify=True)

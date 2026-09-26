@@ -360,3 +360,33 @@ def test_oversized_tsa_response_is_rejected_before_asn1_parsing():
             asyncio.run(stamper.async_request_tsa_response(req))
     finally:
         srv.shutdown()
+
+
+def test_the_tsa_response_is_closed_when_it_is_refused(monkeypatch):
+    """Streamed, so a response refused before its body is read holds its connection until
+    something closes it. From #19."""
+    import asyncio
+    from unittest.mock import Mock
+
+    from asn1crypto import tsp
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    response = Mock(
+        is_redirect=False,
+        is_permanent_redirect=False,
+        headers={"Content-Type": "application/timestamp-reply"},
+        iter_content=lambda chunk_size: [b"12345"],
+    )
+    monkeypatch.setattr(_NoRedirectTimeStamper, "_MAX_RESPONSE_BYTES", 4)
+    monkeypatch.setattr("requests.post", Mock(return_value=response))
+    req = tsp.TimeStampReq({
+        "version": 1,
+        "message_imprint": tsp.MessageImprint({
+            "hash_algorithm": {"algorithm": "sha256"},
+            "hashed_message": b"\x00" * 32,
+        }),
+    })
+
+    with pytest.raises(Exception, match="exceeds the 4 byte limit"):
+        asyncio.run(_NoRedirectTimeStamper("http://tsa.example/tsr").async_request_tsa_response(req))
+    response.close.assert_called_once_with()

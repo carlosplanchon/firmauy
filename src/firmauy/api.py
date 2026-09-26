@@ -527,6 +527,7 @@ def sign_pdf(
 
     from firmauy.signing import (
         _build_timestamper,
+        _check_pdf_size,
         _sign_one_pdf,
         _signing_session,
         _verify_after_pdf,
@@ -540,6 +541,8 @@ def sign_pdf(
     out = Path(output) if output else path.with_stem(path.stem + "_firmado")
     if path.resolve() == out.resolve():
         raise ValueError("input and output are the same file; pass a different output=")
+    # Only the refusal reaches an API caller: there is no channel here for the warning.
+    _check_pdf_size(path, verify=verify)
 
     timestamper = _build_timestamper(
         tsa_url=tsa_url, tsa_user=None, tsa_pass_env=None, tsa_header=None, tsa_header_env=None,
@@ -756,6 +759,7 @@ def sign_files(
 
     from firmauy.signing import (
         _build_timestamper,
+        _check_pdf_size,
         _output_path_for,
         _resolve_sign_kind,
         _sign_one_cms,
@@ -780,6 +784,17 @@ def sign_files(
         if not p.exists():
             raise FileNotFoundError(f"file to sign not found: {p}")
     sa = SignAs(sign_as)
+    if verify:
+        # A PDF past what verify_pdf reads would be signed and then fail its own check, so it is
+        # refused here, before the PIN. A file whose type cannot be detected is left to the loop
+        # below, which reports it where it always has.
+        for p in items:
+            try:
+                is_pdf = _resolve_sign_kind(p, sa) == "pdf"
+            except Exception:
+                continue
+            if is_pdf:
+                _check_pdf_size(p, verify=True)
     out_dir = Path(output_dir) if output_dir is not None else None
     if out_dir is not None:
         out_dir.mkdir(parents=True, exist_ok=True)

@@ -99,8 +99,10 @@ them again. Prints a `Signed: ok/total` summary either way.
 
 With `--input-dir`, every batch command signs only regular files that live inside the directory. A
 symlink, or a file reached through a link that leads outside it, is skipped with a warning, so a
-link planted in a shared folder cannot get a file signed that nobody put there. To sign one on
-purpose, pass it as an argument: explicit files are not filtered.
+link planted in a shared folder cannot get a file signed that nobody put there. A file is also
+checked again when it is opened, after the PIN: if something else took its place since the listing
+(another file, a link, a FIFO), it is refused rather than signed. To sign a linked file on purpose,
+pass it as an argument: explicit files are not filtered.
 
 ## Sign a single PDF
 
@@ -479,6 +481,11 @@ These are two different things, and the distinction matters:
   counts as an error for that file.
 - **`verify-pdf` / `verify-xml` / `verify-any` / `verify`**: a full **technical verification**,
   including the certificate chain to the Uruguayan national root (see below).
+
+A PDF of any size can be signed, but `verify-pdf` reads PDFs up to 128 MiB, so a larger one is
+signed with a warning that firmauy will not be able to verify the signed copy (other validators may
+still accept it). For the same reason `--verify` refuses such a file before the PIN, instead of
+signing it and then reporting its own check as inconclusive.
 
 ```bash
 firmauy sign-pdf input.pdf --verify

@@ -74,8 +74,8 @@ from firmauy.pkcs11_utils import (
     normalize_cert_id_hex,
     select_certificate,
 )
-from firmauy.pdf_verify import verify_pdf
-from firmauy.xml_sign import sign_xml
+from firmauy.pdf_verify import MAX_PDF_BYTES, verify_pdf
+from firmauy.xml_sign import MAX_XML_BYTES, sign_xml
 from firmauy.xml_verify import verify_xml
 from firmauy.cms_sign import sign_cms_detached
 from firmauy.cms_verify import verify_cms
@@ -360,39 +360,46 @@ class _NoRedirectTimeStamper(TimeStamper):
                 raise TimestampRequestError(
                     "Error in communication with timestamp server",
                 ) from exc
-            if raw_res.is_redirect or raw_res.is_permanent_redirect:
-                raise TimestampRequestError(
-                    f"The timestamp server answered {raw_res.status_code} (a redirect) instead of "
-                    "a timestamp. Refusing to follow it: a redirect can carry request headers, "
-                    "credentials among them, to a destination nobody asked for, and can downgrade "
-                    "to plain HTTP on the way. Point --tsa-url at the endpoint directly."
-                )
-            if raw_res.headers.get("Content-Type") != "application/timestamp-reply":
-                raise TimestampRequestError(
-                    "Timestamp server response is malformed.", raw_res
-                )
-            content_length = raw_res.headers.get("Content-Length")
-            if content_length is not None:
-                try:
-                    declared_length = int(content_length)
-                except ValueError:
+            # Streamed, so the connection stays open until the body has been read or the response
+            # is closed, and every refusal below raises before reading it. Closed on every path,
+            # rather than whenever the garbage collector gets to it.
+            try:
+                if raw_res.is_redirect or raw_res.is_permanent_redirect:
                     raise TimestampRequestError(
-                        "Timestamp server response has an invalid Content-Length."
-                    ) from None
-                if declared_length > self._MAX_RESPONSE_BYTES:
-                    raise TimestampRequestError(
-                        f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} byte "
-                        "limit; refusing to parse it."
+                        f"The timestamp server answered {raw_res.status_code} (a redirect) "
+                        "instead of a timestamp. Refusing to follow it: a redirect can carry "
+                        "request headers, credentials among them, to a destination nobody asked "
+                        "for, and can downgrade to plain HTTP on the way. Point --tsa-url at the "
+                        "endpoint directly."
                     )
-            body = bytearray()
-            for chunk in raw_res.iter_content(chunk_size=64 * 1024):
-                body.extend(chunk)
-                if len(body) > self._MAX_RESPONSE_BYTES:
+                if raw_res.headers.get("Content-Type") != "application/timestamp-reply":
                     raise TimestampRequestError(
-                        f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} byte "
-                        "limit; refusing to parse it."
+                        "Timestamp server response is malformed.", raw_res
                     )
-            return tsp.TimeStampResp.load(bytes(body))
+                content_length = raw_res.headers.get("Content-Length")
+                if content_length is not None:
+                    try:
+                        declared_length = int(content_length)
+                    except ValueError:
+                        raise TimestampRequestError(
+                            "Timestamp server response has an invalid Content-Length."
+                        ) from None
+                    if declared_length > self._MAX_RESPONSE_BYTES:
+                        raise TimestampRequestError(
+                            f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} "
+                            "byte limit; refusing to parse it."
+                        )
+                body = bytearray()
+                for chunk in raw_res.iter_content(chunk_size=64 * 1024):
+                    body.extend(chunk)
+                    if len(body) > self._MAX_RESPONSE_BYTES:
+                        raise TimestampRequestError(
+                            f"Timestamp server response exceeds the {self._MAX_RESPONSE_BYTES} "
+                            "byte limit; refusing to parse it."
+                        )
+                return tsp.TimeStampResp.load(bytes(body))
+            finally:
+                raw_res.close()
 
         return await to_thread(task)
 
@@ -1073,6 +1080,79 @@ def _box_in_corner(media_box, corner: StampCorner, margin: float,
     return x1, y1, x1 + width, y1 + height
 
 
+def _input_identity(path: Path) -> tuple[int, int]:
+    """The (device, inode) pair of the file at ``path``, taken when --input-dir is listed so the
+    file can be recognised when it is opened."""
+    st = os.lstat(path)
+    return st.st_dev, st.st_ino
+
+
+def _open_input(path: Path, listed_identity: Optional[tuple[int, int]] = None):
+    """Open a file to sign, for reading.
+
+    A file named on the command line is opened as named, links included: that is the documented
+    way to sign a linked file on purpose. A file found by listing --input-dir comes with the
+    identity it had when it was listed, and between that listing and this open another file, a
+    link or a FIFO can take its place. So it is opened without following a final link and without
+    blocking on a FIFO, and refused unless it is still the regular file that was listed. Comparing
+    the identity also catches a directory on the way swapped for a link, which ``O_NOFOLLOW``
+    alone does not see.
+    """
+    if listed_identity is None:
+        return path.open("rb")
+
+    def changed() -> RuntimeError:
+        return RuntimeError(
+            f"{path} changed after --input-dir was listed, so it was not signed: the file there "
+            "now is not the one the listing checked.")
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError as exc:
+        if exc.errno in _NOT_ADOPTABLE or exc.errno == errno.ENOENT:
+            raise changed() from exc
+        raise
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or (st.st_dev, st.st_ino) != listed_identity:
+            raise changed()
+    except BaseException:
+        os.close(fd)
+        raise
+    return os.fdopen(fd, "rb")
+
+
+# The signed copy is the original plus the signature and the stamp, so an original this close to
+# the limit is treated as over it. A megabyte is several times what either takes.
+_SIGNED_PDF_HEADROOM = 1024 * 1024
+
+
+def _check_pdf_size(path: Path, *, verify: bool,
+                    notify: Optional[Callable[[str], None]] = None) -> None:
+    """Warn about a PDF too large for verify_pdf to read once signed, and refuse --verify on one.
+    Both before the PIN, where the answer can still change what the person does.
+
+    Signing has no size limit: the document is the signer's own, and its size does not make
+    signing it unsafe. Verification has one, because verify_pdf parses files nobody vetted, so a
+    signed PDF past MAX_PDF_BYTES is one firmauy cannot check afterwards. With --verify that would
+    mean signing and then reporting the self-check as inconclusive, a verdict that tells the person
+    not to use a document with nothing wrong in it, so that combination stops here instead.
+    """
+    size = path.stat().st_size
+    if size <= MAX_PDF_BYTES - _SIGNED_PDF_HEADROOM:
+        return
+    limit_mib = MAX_PDF_BYTES // (1024 * 1024)
+    if verify:
+        raise ValueError(
+            f"{path.name} is {size / 2**20:.0f} MiB, and verify-pdf reads PDFs up to "
+            f"{limit_mib} MiB, so --verify could not check the signed copy. Sign it without "
+            "--verify.")
+    if notify:
+        notify(f"Warning: {path.name} is {size / 2**20:.0f} MiB, and verify-pdf reads PDFs up to "
+               f"{limit_mib} MiB, so firmauy will not be able to verify the signed copy. Other "
+               "validators may still accept it.")
+
+
 def _sign_one_pdf(
     *,
     input_pdf: Path,
@@ -1100,9 +1180,11 @@ def _sign_one_pdf(
     margin: float = 20.0,
     allow_hybrid_xref: bool = False,
     notify: Optional[Callable[[str], None]] = None,
+    listed_identity: Optional[tuple[int, int]] = None,
 ) -> None:
     """Sign a single PDF. Raises on any error. ``notify``, when given, receives the warning lines
-    (hybrid-xref opt-in, signature-field reuse); without it they are dropped."""
+    (hybrid-xref opt-in, signature-field reuse); without it they are dropped. ``listed_identity``
+    is set for a file found by listing --input-dir: see :func:`_open_input`."""
     if input_pdf.resolve() == output_pdf.resolve():
         raise RuntimeError(
             f"Input and output are the same file: {output_pdf}. "
@@ -1117,7 +1199,7 @@ def _sign_one_pdf(
 
     ensure_output_parent(output_pdf)
 
-    with input_pdf.open("rb") as inf:
+    with _open_input(input_pdf, listed_identity) as inf:
         # Hybrid cross-reference PDFs (a classic xref table + an xref stream, common in files
         # exported by design tools) can't be incrementally signed in strict mode: pyHanko refuses
         # because the two xref structures could desync and the signature would not be equivalent
@@ -1243,8 +1325,10 @@ def _sign_one_xml(
     signing_time: datetime,
     overwrite: bool,
     timestamper=None,
+    listed_identity: Optional[tuple[int, int]] = None,
 ) -> None:
-    """Sign a single XML (XAdES-BES, or XAdES-T with a timestamper). Raises on any error."""
+    """Sign a single XML (XAdES-BES, or XAdES-T with a timestamper). Raises on any error.
+    ``listed_identity`` is set for a file found by listing --input-dir: see :func:`_open_input`."""
     if input_xml.resolve() == output_xml.resolve():
         raise RuntimeError(
             f"Input and output are the same file: {output_xml}. "
@@ -1257,8 +1341,14 @@ def _sign_one_xml(
             path=output_xml,
         )
     ensure_output_parent(output_xml)
+    # Read with the limit sign_xml enforces, so a file far past it is refused after MAX_XML_BYTES
+    # bytes instead of being read whole first.
+    with _open_input(input_xml, listed_identity) as f:
+        xml_bytes = f.read(MAX_XML_BYTES + 1)
+    if len(xml_bytes) > MAX_XML_BYTES:
+        raise ValueError(f"XML input exceeds the {MAX_XML_BYTES} byte limit; refusing to parse it")
     signed = sign_xml(
-        input_xml.read_bytes(),
+        xml_bytes,
         cert=cert,
         signer=signer,
         signing_time=signing_time,
@@ -1274,8 +1364,10 @@ def _sign_one_cms(
     pkcs11_signer: "PKCS11Signer",
     timestamper,
     overwrite: bool,
+    listed_identity: Optional[tuple[int, int]] = None,
 ) -> None:
-    """Sign a single file as a detached CAdES-BES ``.p7s``. Raises on any error."""
+    """Sign a single file as a detached CAdES-BES ``.p7s``. Raises on any error.
+    ``listed_identity`` is set for a file found by listing --input-dir: see :func:`_open_input`."""
     if input_file.resolve() == output_p7s.resolve():
         raise RuntimeError(
             f"Input and output are the same file: {output_p7s}. "
@@ -1288,7 +1380,7 @@ def _sign_one_cms(
             path=output_p7s,
         )
     ensure_output_parent(output_p7s)
-    with input_file.open("rb") as f:
+    with _open_input(input_file, listed_identity) as f:
         p7s = sign_cms_detached(f, signer=pkcs11_signer, timestamper=timestamper)
     _atomic_write_bytes(output_p7s, p7s, overwrite=overwrite)
 

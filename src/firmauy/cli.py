@@ -92,6 +92,8 @@ from firmauy._shared import (
 from firmauy.signing import (
     _build_timestamper,
     _card_connection,
+    _check_pdf_size,
+    _input_identity,
     _resolve_sign_kind,
     _sign_one_cms,
     _sign_one_pdf,
@@ -399,14 +401,16 @@ def _batch_input_allowed(path: Path, input_dir: Path) -> bool:
         return False
 
 
-def _discover_batch_inputs(input_dir: Path, pattern: str) -> list[Path]:
+def _discover_batch_inputs(input_dir: Path, pattern: str,
+                           listed: Optional[dict] = None) -> list[Path]:
     """The files under ``input_dir`` matching ``pattern`` that a batch signs, sorted.
 
     A symlink, or a file that resolves outside the directory, is skipped with a warning rather
     than in silence. Those used to be signed, so a batch that now drops them without a word looks
     like one that lost them, and the warning names the way to sign one on purpose: as an
     argument, where nothing is filtered. The filter itself exists because a link planted in a
-    shared folder could otherwise get a file signed that nobody put there.
+    shared folder could otherwise get a file signed that nobody put there. ``listed``, when given,
+    receives each file's identity, so signing can refuse a file that changed since this listing.
     """
     found = []
     for p in sorted(input_dir.glob(pattern)):
@@ -414,6 +418,8 @@ def _discover_batch_inputs(input_dir: Path, pattern: str) -> list[Path]:
             continue
         if _batch_input_allowed(p, input_dir):
             found.append(p)
+            if listed is not None:
+                listed[p] = _input_identity(p)
         else:
             _warn(f"Skipping {p}: a symlink, or a file outside --input-dir, is not signed from a "
                   "directory listing. Pass it as an argument to sign it on purpose.")
@@ -684,6 +690,8 @@ def sign_pdf(
                 err=True,
             )
 
+        _check_pdf_size(input_pdf, verify=verify, notify=_warn)
+
         if dry_run:
             _dry_run([(input_pdf, output_pdf, "pdf")], json_output, single=True)
             return
@@ -825,11 +833,12 @@ def sign_pdf_batch(
             (p, _batch_output(p, None, output_dir, ".pdf", suffix)) for p in (input_pdfs or [])
         ]
 
+        listed: dict[Path, tuple[int, int]] = {}    # identities from --input-dir
         if input_dir is not None:
             if not input_dir.is_dir():
                 _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = "**/*.pdf" if recursive else "*.pdf"
-            for p in _discover_batch_inputs(input_dir, pattern):
+            for p in _discover_batch_inputs(input_dir, pattern, listed):
                 jobs.append((p, _batch_output(p, input_dir, output_dir, ".pdf", suffix)))
 
         if not jobs:
@@ -850,6 +859,8 @@ def sign_pdf_batch(
             )
 
         _raise_on_output_collisions(jobs)
+        for p, _ in jobs:
+            _check_pdf_size(p, verify=verify, notify=_warn)
         if dry_run:
             _dry_run([(i, o, "pdf") for i, o in jobs], json_output)
             return
@@ -886,6 +897,7 @@ def sign_pdf_batch(
                     _sign_one_pdf(
                         input_pdf=input_pdf,
                         output_pdf=output_pdf,
+                        listed_identity=listed.get(input_pdf),
                         pkcs11_signer=pkcs11_signer,
                         signer_name=ctx.signer_name,
                         issuer_name=ctx.issuer_name,
@@ -1114,11 +1126,12 @@ def sign_xml_batch(
             (p, _batch_output(p, None, output_dir, ".xml", suffix)) for p in (input_xmls or [])
         ]
 
+        listed: dict[Path, tuple[int, int]] = {}    # identities from --input-dir
         if input_dir is not None:
             if not input_dir.is_dir():
                 _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = "**/*.xml" if recursive else "*.xml"
-            for p in _discover_batch_inputs(input_dir, pattern):
+            for p in _discover_batch_inputs(input_dir, pattern, listed):
                 jobs.append((p, _batch_output(p, input_dir, output_dir, ".xml", suffix)))
 
         if not jobs:
@@ -1153,6 +1166,7 @@ def sign_xml_batch(
                     _sign_one_xml(
                         input_xml=input_xml,
                         output_xml=output_xml,
+                        listed_identity=listed.get(input_xml),
                         cert=ctx.cert,
                         signer=raw_signer,
                         signing_time=datetime.now(ZoneInfo(timezone)),
@@ -1358,11 +1372,12 @@ def sign_any_batch(
         # named files in different subfolders (with --recursive) do not collide.
         jobs = [(p, output_dir / f"{p.name}.p7s") for p in (input_files or [])]
 
+        listed: dict[Path, tuple[int, int]] = {}    # identities from --input-dir
         if input_dir is not None:
             if not input_dir.is_dir():
                 _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = f"**/{glob}" if recursive else glob
-            for p in _discover_batch_inputs(input_dir, pattern):
+            for p in _discover_batch_inputs(input_dir, pattern, listed):
                 rel = p.relative_to(input_dir).as_posix()
                 jobs.append((p, output_dir / f"{rel}.p7s"))
 
@@ -1398,6 +1413,7 @@ def sign_any_batch(
                     _sign_one_cms(
                         input_file=input_file,
                         output_p7s=output_p7s,
+                        listed_identity=listed.get(input_file),
                         pkcs11_signer=pkcs11_signer,
                         timestamper=timestamper,
                         overwrite=overwrite,
@@ -1573,6 +1589,9 @@ def sign_cmd(
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
         )
 
+        if kind == "pdf":
+            _check_pdf_size(input_file, verify=verify, notify=_warn)
+
         if dry_run:
             _dry_run([(input_file, output, kind)], json_output, single=True)
             return
@@ -1720,11 +1739,12 @@ def sign_batch(
         # Gather (input, base): base is None for positionals, input_dir for dir-sourced (so
         # _batch_output can preserve sub-directory structure).
         items: list[tuple[Path, Optional[Path]]] = [(p, None) for p in (input_files or [])]
+        listed: dict[Path, tuple[int, int]] = {}    # identities from --input-dir
         if input_dir is not None:
             if not input_dir.is_dir():
                 _fail(f"--input-dir '{input_dir}' is not a valid directory.", json_output)
             pattern = f"**/{glob}" if recursive else glob
-            for p in _discover_batch_inputs(input_dir, pattern):
+            for p in _discover_batch_inputs(input_dir, pattern, listed):
                 items.append((p, input_dir))
         if not items:
             _fail("No input files specified. Use positional arguments or --input-dir.", json_output)
@@ -1754,6 +1774,10 @@ def sign_batch(
         # named by stem+suffix+ext, so same-stem inputs of different extensions that resolve to the
         # same kind collide (the CAdES <name>.p7s naming cannot).
         _raise_on_output_collisions((input_path, output) for input_path, _kind, output in jobs)
+
+        for p, k, _ in jobs:
+            if k == "pdf":
+                _check_pdf_size(p, verify=verify, notify=_warn)
 
         if dry_run:
             _dry_run([(i, o, k) for i, k, o in jobs], json_output, errors=predetect_errors)
@@ -1790,6 +1814,7 @@ def sign_batch(
                     if kind == "pdf":
                         _sign_one_pdf(
                             input_pdf=input_path, output_pdf=output, pkcs11_signer=pkcs11_signer,
+                            listed_identity=listed.get(input_path),
                             signer_name=ctx.signer_name, issuer_name=ctx.issuer_name,
                             cert_serial=ctx.cert_serial,
                             timestamper=timestamper, meta=meta, page=page, x1=x1, y1=y1, x2=x2, y2=y2,
@@ -1804,6 +1829,7 @@ def sign_batch(
                     elif kind == "xml":
                         _sign_one_xml(
                             input_xml=input_path, output_xml=output, cert=ctx.cert, signer=raw_signer,
+                            listed_identity=listed.get(input_path),
                             signing_time=datetime.now(ZoneInfo(timezone)),
                             overwrite=overwrite, timestamper=timestamper,
                         )
@@ -1812,6 +1838,7 @@ def sign_batch(
                     else:
                         _sign_one_cms(
                             input_file=input_path, output_p7s=output, pkcs11_signer=pkcs11_signer,
+                            listed_identity=listed.get(input_path),
                             timestamper=timestamper, overwrite=overwrite,
                         )
                         if verify:

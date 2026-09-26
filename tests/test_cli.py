@@ -3138,3 +3138,69 @@ def test_dry_run_json_lists_what_would_be_signed(monkeypatch, tmp_path):
     assert [(f["kind"], f["status"], f["output"].rsplit("/", 1)[-1]) for f in payload["files"]] == [
         ("pades", "would_sign", "a_firmado.pdf"), ("xades", "would_sign", "b_firmado.xml")]
     assert not out.exists(), "a dry run created the output directory"
+
+
+# --- PDFs past what verify-pdf reads -------------------------------------------
+
+def _shrink_the_pdf_limit(monkeypatch, limit=2000, headroom=100):
+    """verify-pdf's real limit is 128 MiB. The check reads it from firmauy.signing, so a small one
+    stands in for it here."""
+    from firmauy import signing
+
+    monkeypatch.setattr(signing, "MAX_PDF_BYTES", limit)
+    monkeypatch.setattr(signing, "_SIGNED_PDF_HEADROOM", headroom)
+
+
+def test_a_pdf_past_the_verify_limit_is_signed_with_a_warning(monkeypatch, tmp_path):
+    _refuse_the_card(monkeypatch)
+    _shrink_the_pdf_limit(monkeypatch)
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"%PDF-1.7\n" + b"0" * 1950)
+
+    r = runner.invoke(app, ["sign-pdf", str(big), str(tmp_path / "out.pdf"), "--dry-run"])
+    assert r.exit_code == 0, r.output
+    assert "will not be able to verify the signed copy" in r.output
+    assert "would be signed" in r.output
+
+
+def test_verify_on_a_pdf_past_the_limit_stops_before_the_pin(monkeypatch, tmp_path):
+    """It would sign, and then report its own check as inconclusive: a verdict that says not to
+    use a document with nothing wrong in it."""
+    _refuse_the_card(monkeypatch)
+    _shrink_the_pdf_limit(monkeypatch)
+    big = tmp_path / "big.pdf"
+    big.write_bytes(b"%PDF-1.7\n" + b"0" * 1950)
+    small = tmp_path / "small.pdf"
+    small.write_bytes(b"%PDF-1.7\n")
+
+    for argv in (["sign-pdf", str(big), str(tmp_path / "o.pdf")],
+                 ["sign-batch", str(small), str(big), "--output-dir", str(tmp_path / "out")]):
+        r = runner.invoke(app, argv + ["--verify"])
+        assert r.exit_code == 1
+        assert "Sign it without --verify" in r.output
+
+    r = runner.invoke(app, ["sign-pdf", str(small), str(tmp_path / "o.pdf"), "--verify", "--dry-run"])
+    assert r.exit_code == 0, r.output
+
+
+def test_a_batch_passes_the_listing_identity_to_the_signer(monkeypatch, tmp_path):
+    """A file found in --input-dir is signed only if it is still the file the listing checked,
+    which the signer can tell only if it is handed what the listing saw. A file named as an
+    argument gets None and is opened as named."""
+    import os
+
+    _patch_signing(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(cli, "_sign_one_pdf",
+                        lambda **k: seen.update({k["input_pdf"].name: k["listed_identity"]}))
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    extra = tmp_path / "extra.pdf"
+    extra.write_bytes(b"%PDF-1.7\n")
+
+    r = runner.invoke(app, ["sign-pdf-batch", str(extra), "--input-dir", str(src),
+                            "--output-dir", str(tmp_path / "out")])
+    assert r.exit_code == 0, r.output
+    st = os.lstat(src / "a.pdf")
+    assert seen == {"extra.pdf": None, "a.pdf": (st.st_dev, st.st_ino)}

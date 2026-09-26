@@ -37,6 +37,7 @@ dependencies = [
     "pyscard>=2.3.1",
     "python-pkcs11>=0.9.4",
     "reportlab>=5.0.0",
+    "requests>=2.33.0",
     "typer>=0.26.8",
 ]
 

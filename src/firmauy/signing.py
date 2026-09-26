@@ -35,7 +35,7 @@ from pyhanko.pdf_utils.layout import (
 )
 from pyhanko.sign import fields, signers
 from pyhanko.sign.pkcs11 import PKCS11Signer
-from pyhanko.sign.timestamps import HTTPTimeStamper
+from pyhanko.sign.timestamps import TimeStamper
 from firmauy.appearance import ensure_output_parent, make_appearance_pdf
 from firmauy.card_reader import (
     open_reader,
@@ -297,25 +297,46 @@ _SENSITIVE_HEADERS = frozenset({
 })
 
 
-class _NoRedirectTimeStamper(HTTPTimeStamper):
+class _NoRedirectTimeStamper(TimeStamper):
     """A timestamper that refuses to follow redirects.
 
-    pyHanko's ``HTTPTimeStamper`` posts with requests' default, which follows them. requests drops
-    ``Authorization`` when a redirect downgrades https to http, and keeps every other header, so a
-    TSA answering 302 could walk an ``X-Api-Key`` from --tsa-header-env straight into plaintext.
-    Checking the scheme of the URL the user gave does not help: by the time the final URL is
-    known, the secret has already been sent to it.
+    pyHanko's ``HTTPTimeStamper`` follows them, by default, over requests up to 0.36 and over
+    aiohttp from 0.37. requests drops ``Authorization`` when a redirect downgrades https to http,
+    and keeps every other header, so a TSA answering 302 could walk an ``X-Api-Key`` from
+    --tsa-header-env straight into plaintext. Checking the scheme of the URL the user gave does not
+    help: by the time the final URL is known, the secret has already been sent to it.
 
     Refused for every request, not only credentialed ones. RFC 3161 is a POST to a fixed endpoint,
     a TSA that redirects is doing something unusual, and following a POST redirect is precisely
     how a request ends up somewhere nobody named. A real relocation is worth a config change, not
     a silent hop.
 
-    Overriding this means restating the parent's body, which is a maintenance cost taken
-    deliberately: the alternative is leaving the guarantee to a default we do not control.
+    Built on pyHanko's abstract ``TimeStamper``, not on ``HTTPTimeStamper``. This class used to
+    subclass that one and override only the request, which left the constructor to pyHanko, and
+    0.37 changed it underneath: ``auth`` became an ``aiohttp.BasicAuth``, which requests cannot
+    use, and a plain install stopped bringing requests at all. Owning the constructor as well as
+    the request keeps these guarantees independent of the HTTP client pyHanko prefers in a given
+    release, and is why requests is now a direct dependency instead of an inherited one.
     """
 
     _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+
+    def __init__(self, url, *, timeout=5, auth=None, headers=None):
+        # timeout is in seconds, the same default pyHanko's HTTPTimeStamper uses.
+        super().__init__()
+        self.url = url
+        self.timeout = timeout
+        self.auth = auth
+        self.headers = headers
+
+    def request_headers(self) -> dict:
+        # The media types RFC 3161 section 3.4 fixes for the HTTP transport. They win over a
+        # same-named --tsa-header, as they do in pyHanko.
+        return {
+            **(self.headers or {}),
+            "Content-Type": "application/timestamp-query",
+            "Accept": "application/timestamp-reply",
+        }
 
     async def async_request_tsa_response(self, req):
         from asyncio import to_thread
@@ -385,7 +406,7 @@ def _build_timestamper(
     tsa_header_env: Optional[List[str]],
     notify: Optional[Callable[[str], None]] = None,
 ):
-    """Build an HTTPTimeStamper from the TSA options, or None when no --tsa-url is given.
+    """Build the TSA timestamper from the TSA options, or None when no --tsa-url is given.
 
     Supports HTTP Basic auth (``--tsa-user`` + ``--tsa-pass-env``) and arbitrary extra headers for
     credentialed RFC 3161 TSAs. A header value may be literal (``--tsa-header 'Name: Value'``) or,

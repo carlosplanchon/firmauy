@@ -318,6 +318,7 @@ dependencies = [
     { name = "pyscard" },
     { name = "python-pkcs11" },
     { name = "reportlab" },
+    { name = "requests" },
     { name = "typer" },
 ]
 
@@ -339,6 +340,7 @@ requires-dist = [
     { name = "pyscard", specifier = ">=2.3.1" },
     { name = "python-pkcs11", specifier = ">=0.9.4" },
     { name = "reportlab", specifier = ">=5.0.0" },
+    { name = "requests", specifier = ">=2.33.0" },
     { name = "typer", specifier = ">=0.26.8" },
 ]
 

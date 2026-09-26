@@ -5,7 +5,7 @@ argv-visibility warning for sensitive literal headers goes to the optional ``not
 callback (which the CLI wires to stderr)."""
 
 import pytest
-from pyhanko.sign.timestamps import HTTPTimeStamper
+from pyhanko.sign.timestamps import TimeStamper
 
 from firmauy.signing import _build_timestamper
 
@@ -32,7 +32,7 @@ def test_auth_options_require_url():
 
 def test_url_only_no_auth():
     ts = _b(tsa_url="https://tsa.example/tsr")
-    assert isinstance(ts, HTTPTimeStamper)
+    assert isinstance(ts, TimeStamper)
     assert ts.auth is None and ts.headers is None
 
 
@@ -142,7 +142,7 @@ def test_an_anonymous_timestamp_over_http_is_still_allowed():
     """Deliberately not blocked. Uruguay has no free public TSA and the ones people reach for are
     bring-your-own, so refusing plain http entirely would break the ordinary case to protect a
     credential that is not being sent."""
-    assert isinstance(_b(tsa_url="http://tsa.example/tsr"), HTTPTimeStamper)
+    assert isinstance(_b(tsa_url="http://tsa.example/tsr"), TimeStamper)
 
 
 def test_credentials_over_https_are_fine(monkeypatch):
@@ -150,14 +150,14 @@ def test_credentials_over_https_are_fine(monkeypatch):
 
     built = _b(tsa_url="https://tsa.example/tsr", tsa_user="ana", tsa_pass_env="TSA_PW")
 
-    assert isinstance(built, HTTPTimeStamper)
+    assert isinstance(built, TimeStamper)
 
 
 def test_the_scheme_check_is_not_fooled_by_case():
     with pytest.raises(ValueError, match="unencrypted"):
         _b(tsa_url="HTTP://tsa.example/tsr", tsa_header=["X-Api-Key: abc123"])
     assert isinstance(_b(tsa_url="HTTPS://tsa.example/tsr",
-                         tsa_header=["X-Api-Key: abc123"]), HTTPTimeStamper)
+                         tsa_header=["X-Api-Key: abc123"]), TimeStamper)
 
 
 def test_credentials_hidden_in_the_url_do_not_slip_past():
@@ -244,6 +244,60 @@ def test_a_redirect_is_refused_and_the_headers_never_arrive():
         srv.shutdown()
 
     assert "x-api-key" not in seen_at_destination, "the secret reached the redirect target"
+
+
+def test_basic_auth_and_the_rfc3161_media_types_reach_the_tsa():
+    """Checked where they land: at the server.
+
+    pyHanko 0.37 moved ``HTTPTimeStamper`` to aiohttp and turned ``auth`` into an
+    ``aiohttp.BasicAuth``, which requests refuses with a TypeError before sending anything. While
+    this class inherited that constructor, every credentialed timestamp broke on a pyHanko upgrade,
+    with no change on this side.
+    """
+    import asyncio
+    import base64
+    import http.server
+
+    from asn1crypto import tsp
+
+    seen = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            seen.update({k.lower(): v for k, v in self.headers.items()})
+            self.rfile.read(int(self.headers["Content-Length"]))
+            # An empty 200, which the client rejects as malformed. What is under test is the
+            # request, and a well-formed reply would need a signed token to parse at all.
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    srv = _tsa_server(Handler)
+    try:
+        # The subclass directly: the builder refuses credentials over http, and this test is about
+        # what the request carries, not about that guard.
+        stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/tsr",
+                                         auth=("alice", "s3cret"))
+        req = tsp.TimeStampReq({
+            "version": 1,
+            "message_imprint": tsp.MessageImprint({
+                "hash_algorithm": {"algorithm": "sha256"},
+                "hashed_message": b"\x00" * 32,
+            }),
+        })
+        with pytest.raises(Exception, match="malformed"):
+            asyncio.run(stamper.async_request_tsa_response(req))
+    finally:
+        srv.shutdown()
+
+    assert seen["authorization"] == "Basic " + base64.b64encode(b"alice:s3cret").decode()
+    assert seen["content-type"] == "application/timestamp-query"
+    assert seen["accept"] == "application/timestamp-reply"
 
 
 def test_the_builder_returns_a_timestamper_that_refuses_redirects():

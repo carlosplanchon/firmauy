@@ -180,6 +180,7 @@ OverwriteOpt = Annotated[bool, typer.Option("--overwrite", help="Allow overwriti
 ForceOpt = Annotated[bool, typer.Option("--force", help="Continue even if the signature field already contains a signature (the resulting PDF may become invalid).")]
 QuietOpt = Annotated[bool, typer.Option("--quiet", "-q", help="Do not print the signer identity block (name, issuer, certificate serial, PKCS#11 ID). Use in batch/automation to keep identifying data out of logs.")]
 VerifyOpt = Annotated[bool, typer.Option("--verify", help="After signing, re-verify the produced signature (integrity and coverage, no trust); the command fails if it is not intact.")]
+DryRunOpt = Annotated[bool, typer.Option("--dry-run", help="Check the options, inputs and output paths, show what would be signed and where, and stop before the card and the PIN. The documents themselves are only opened when signing.")]
 ImageOpt = Annotated[Optional[Path], typer.Option("--image", exists=True, dir_okay=False, readable=True, help="Image (PNG/JPEG) to show in the signature appearance. Cosmetic only; does not affect the signature.")]
 ImageModeOpt = Annotated[ImageMode, typer.Option("--image-mode", help="Where the --image goes: background (behind the text, default), side (left of the text), or only (image, no text).")]
 ImageOpacityOpt = Annotated[float, typer.Option("--image-opacity", min=0.0, max=1.0, help="Opacity of the --image in background mode (0..1). Default 0.2 (subtle watermark).")]
@@ -254,6 +255,41 @@ def _fail(message: str, json_output: bool, error_code: str = "invalid_argument")
 # The signature kind as --json names it: the words the API's SignReport uses, not the internal
 # names `sign` dispatches on.
 _JSON_KIND = {"pdf": "pades", "xml": "xades", "any": "cades"}
+
+
+def _dry_run(jobs, json_output: bool, *, single: bool = False, errors=()) -> None:
+    """Report a --dry-run, what would be signed and where, and stop before the card.
+
+    It runs after every check signing makes before the PIN (the options, the inputs, the output
+    paths and their collisions) and goes no further. The documents are not opened, so a PDF that
+    turns out to be encrypted, or an XML that does not parse, still fails when it is signed: the
+    report says what would be signed, not that it will succeed. ``jobs`` holds (input, output,
+    kind) triples. An input that already failed, in ``errors``, makes it exit 1, as the real run
+    would.
+    """
+    errors = list(errors)
+    if json_output:
+        if single:
+            (_, output, kind), = jobs
+            payload = {"schema_version": _JSON_SCHEMA_VERSION, "ok": True, "dry_run": True,
+                       "kind": _JSON_KIND[kind], "output": str(output)}
+        else:
+            files = [{"input": str(i), "output": str(o), "status": "would_sign",
+                      "kind": _JSON_KIND[k]} for i, o, k in jobs]
+            files += [_batch_file_result(i, None, "error", exc=exc) for i, exc in errors]
+            payload = {"schema_version": _JSON_SCHEMA_VERSION, "ok": not errors,
+                       "dry_run": True, "total": len(files), "files": files}
+        typer.echo(_json_dumps(payload, False))
+    else:
+        typer.echo(f"Dry run: {len(jobs)} file(s) would be signed. No card or PIN used.")
+        for i, o, _ in jobs:
+            typer.echo(f"  {i} -> {o}")
+        for i, exc in errors:
+            typer.secho(f"ERROR: {i}: {_format_error(exc)}", fg=typer.colors.RED, err=True)
+        typer.echo("Options, inputs and output paths were checked. "
+                   "The documents are only opened when they are signed.")
+    if errors:
+        raise typer.Exit(code=1)
 
 
 def _batch_file_result(input_path: Path, output_path: Optional[Path], status: str, *,
@@ -587,6 +623,7 @@ def sign_pdf(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -646,6 +683,10 @@ def sign_pdf(
                 fg=typer.colors.YELLOW,
                 err=True,
             )
+
+        if dry_run:
+            _dry_run([(input_pdf, output_pdf, "pdf")], json_output, single=True)
+            return
 
         with _signing_session(
             native=native, reader=reader,
@@ -750,6 +791,7 @@ def sign_pdf_batch(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -808,6 +850,9 @@ def sign_pdf_batch(
             )
 
         _raise_on_output_collisions(jobs)
+        if dry_run:
+            _dry_run([(i, o, "pdf") for i, o in jobs], json_output)
+            return
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _signing_session(
@@ -953,6 +998,7 @@ def sign_xml_cmd(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign an XML document with a Uruguayan cédula (XAdES-BES, or XAdES-T with --tsa-url)."""
@@ -977,6 +1023,10 @@ def sign_xml_cmd(
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env, tsa_header=tsa_header,
             tsa_header_env=tsa_header_env,
         )
+
+        if dry_run:
+            _dry_run([(input_xml, output_xml, "xml")], json_output, single=True)
+            return
 
         with _signing_session(
             native=native, reader=reader,
@@ -1046,6 +1096,7 @@ def sign_xml_batch(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign multiple XML documents with a single PKCS#11 session (XAdES-BES, or XAdES-T with --tsa-url)."""
@@ -1074,6 +1125,9 @@ def sign_xml_batch(
             _fail("No input files specified. Use positional arguments or --input-dir.", json_output)
 
         _raise_on_output_collisions(jobs)
+        if dry_run:
+            _dry_run([(i, o, "xml") for i, o in jobs], json_output)
+            return
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _signing_session(
@@ -1178,6 +1232,7 @@ def sign_any(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign any file with a Uruguayan cédula, producing a detached CAdES-BES
@@ -1207,6 +1262,10 @@ def sign_any(
                 f"Output file already exists: {output_p7s}\n"
                 "Use --overwrite to overwrite it."
             )
+
+        if dry_run:
+            _dry_run([(input_file, output_p7s, "any")], json_output, single=True)
+            return
 
         with _signing_session(
             native=native, reader=reader,
@@ -1276,6 +1335,7 @@ def sign_any_batch(
     overwrite: OverwriteOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     json_output: bool = typer.Option(False, "--json", help="Emit a JSON result."),
 ) -> None:
     """Sign multiple files with a single PKCS#11 session (detached CAdES-BES .p7s).
@@ -1310,6 +1370,9 @@ def sign_any_batch(
             _fail("No input files specified. Use positional arguments or --input-dir.", json_output)
 
         _raise_on_output_collisions(jobs)
+        if dry_run:
+            _dry_run([(i, o, "any") for i, o in jobs], json_output)
+            return
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with _signing_session(
@@ -1454,6 +1517,7 @@ def sign_cmd(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -1508,6 +1572,10 @@ def sign_cmd(
             tsa_url=tsa_url, tsa_user=tsa_user, tsa_pass_env=tsa_pass_env,
             tsa_header=tsa_header, tsa_header_env=tsa_header_env,
         )
+
+        if dry_run:
+            _dry_run([(input_file, output, kind)], json_output, single=True)
+            return
 
         with _signing_session(
             native=native, reader=reader,
@@ -1617,6 +1685,7 @@ def sign_batch(
     force: ForceOpt = False,
     quiet: QuietOpt = False,
     verify: VerifyOpt = False,
+    dry_run: DryRunOpt = False,
     image: ImageOpt = None,
     image_mode: ImageModeOpt = ImageMode.background,
     image_opacity: ImageOpacityOpt = DEFAULT_IMAGE_OPACITY,
@@ -1685,6 +1754,10 @@ def sign_batch(
         # named by stem+suffix+ext, so same-stem inputs of different extensions that resolve to the
         # same kind collide (the CAdES <name>.p7s naming cannot).
         _raise_on_output_collisions((input_path, output) for input_path, _kind, output in jobs)
+
+        if dry_run:
+            _dry_run([(i, o, k) for i, k, o in jobs], json_output, errors=predetect_errors)
+            return
 
         output_dir.mkdir(parents=True, exist_ok=True)
 

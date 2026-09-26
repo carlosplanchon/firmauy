@@ -3078,3 +3078,63 @@ def test_list_readers_json_keeps_the_exit_status(monkeypatch):
     r = runner.invoke(app, ["list-readers", "--json"])
     assert r.exit_code == 1
     assert json.loads(r.stdout) == {"schema_version": 2, "readers": []}
+
+
+# --- --dry-run ----------------------------------------------------------------
+
+def _refuse_the_card(monkeypatch):
+    """Any attempt to open a signing session fails the test: a dry run must never reach it."""
+    def no_session(**kwargs):
+        raise AssertionError("a dry run opened the signing session")
+
+    monkeypatch.setattr(cli, "_signing_session", no_session)
+
+
+def test_dry_run_stops_before_the_card(monkeypatch, tmp_path):
+    _refuse_the_card(monkeypatch)
+    source = tmp_path / "input.pdf"
+    source.write_bytes(b"%PDF-1.7\n%%EOF\n")
+    output = tmp_path / "signed.pdf"
+
+    r = runner.invoke(app, ["sign-pdf", str(source), str(output), "--dry-run"])
+    assert r.exit_code == 0, r.output
+    assert "1 file(s) would be signed" in r.output
+    assert "only opened when they are signed" in r.output
+    assert not output.exists()
+
+
+def test_batch_dry_run_stops_where_the_real_run_would(monkeypatch, tmp_path):
+    """A dry run that says yes where signing says no is worse than none. Both of these stop the
+    real run before the PIN, so they stop the dry run too."""
+    _refuse_the_card(monkeypatch)
+    for folder in ("d1", "d2"):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    out = tmp_path / "out"
+
+    r = runner.invoke(app, ["sign-pdf-batch", str(tmp_path / "d1" / "a.pdf"),
+                            str(tmp_path / "d2" / "a.pdf"), "--output-dir", str(out), "--dry-run"])
+    assert r.exit_code == 1 and "Output path collision" in r.output
+
+    r = runner.invoke(app, ["sign-pdf-batch", str(tmp_path / "d1" / "a.pdf"), "--output-dir", str(out),
+                            "--x1", "300", "--x2", "100", "--dry-run"])
+    assert r.exit_code == 1 and "Coordinates must satisfy" in r.output
+    assert not out.exists()
+
+
+def test_dry_run_json_lists_what_would_be_signed(monkeypatch, tmp_path):
+    _refuse_the_card(monkeypatch)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "a.pdf").write_bytes(b"%PDF-1.7\n")
+    (src / "b.xml").write_bytes(b"<r/>")
+    out = tmp_path / "out"
+
+    r = runner.invoke(app, ["sign-batch", "--input-dir", str(src), "--output-dir", str(out),
+                            "--dry-run", "--json"])
+    assert r.exit_code == 0, r.output
+    payload = json.loads(r.stdout)
+    assert (payload["ok"], payload["dry_run"], payload["total"]) == (True, True, 2)
+    assert [(f["kind"], f["status"], f["output"].rsplit("/", 1)[-1]) for f in payload["files"]] == [
+        ("pades", "would_sign", "a_firmado.pdf"), ("xades", "would_sign", "b_firmado.xml")]
+    assert not out.exists(), "a dry run created the output directory"

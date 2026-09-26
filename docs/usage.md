@@ -486,6 +486,27 @@ firmauy sign-pdf input.pdf --verify
 # Verified: signature intact and covers the whole file.
 ```
 
+### Dry run (`--dry-run`)
+
+Every signing command takes `--dry-run`. It makes the checks signing makes before the card (the
+options, the inputs, the output paths, and whether two inputs would write to the same file), lists
+what would be signed and where, and stops there: no card, no PIN, nothing written, not even the
+output directory.
+
+```bash
+firmauy sign-batch --input-dir docs --output-dir signed --dry-run
+# Dry run: 2 file(s) would be signed. No card or PIN used.
+#   docs/a.pdf -> signed/a_firmado.pdf
+#   docs/b.xml -> signed/b_firmado.xml
+# Options, inputs and output paths were checked. The documents are only opened when they are signed.
+```
+
+The documents themselves are not opened, so a dry run that passes does not promise that every file
+will sign: an encrypted PDF, or an XML that does not parse, still fails when it is signed. With
+`--json`, a batch prints `{"schema_version": 2, "ok": true, "dry_run": true, "total": 2, "files":
+[...]}`, each file with `input`, `output`, `kind` and `"status": "would_sign"`, and a single file
+prints its `kind` and `output`.
+
 ### JSON output (`--json`)
 
 Every signing command (`sign`, `sign-pdf`, `sign-xml`, `sign-any` and their batch forms), and

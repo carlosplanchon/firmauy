@@ -351,6 +351,7 @@ verification output. Use `--redact` whenever sharing command output.
 ## Acknowledgements
 
 - [@nicolasgutierrezdev](https://github.com/nicolasgutierrezdev): contributed the `fetch-identity` and `list-readers` commands for reading the cardholder's biographical data over PC/SC ([#1](https://github.com/carlosplanchon/firmauy/pull/1)). Also provided reference for the signature appearance inspired by signatures generated using the Uruguayan ID card (cédula), and helped test the XAdES (XML) signing feature.
+- To Guadalupe Muses, a law student from Uruguay, for sharing valuable sources and perspectives on digital evidence, and for the conversations that helped shape the problem that eventually led to FirmaUY.
 
 ## License
 

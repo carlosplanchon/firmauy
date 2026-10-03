@@ -53,7 +53,7 @@ from firmauy.errors import (
     OutputCommittedError,
     OutputExistsError,
     PostSignVerificationError,
-    PinError,
+    PinFormatError,
     TimestampDestinationRefusedError,
     TimestampError,
 )
@@ -164,19 +164,19 @@ def _resolve_final_pin(pin, pin_provider) -> str:
         raise RuntimeError("no PIN was supplied: pass pin= or pin_provider=")
     final = pin if pin is not None else pin_provider()
     if not final:
-        raise PinError(
+        raise PinFormatError(
             "Empty PIN received; aborting before contacting the card "
             "(an empty PIN would still count toward its retry limit)."
         )
     # isascii() as well as isdigit(): the latter is true for '٤' and '④', which the card would
     # never accept and which encoding to ASCII would reject one layer down, after the guard.
     if not (final.isascii() and final.isdigit()):
-        raise PinError(
+        raise PinFormatError(
             "The cédula's PIN is digits only; aborting before contacting the card "
             "(a wrong PIN would still count toward its retry limit)."
         )
     if not 4 <= len(final) <= 8:
-        raise PinError(
+        raise PinFormatError(
             f"The cédula's PIN is 4 to 8 digits, got {len(final)}; aborting before contacting "
             "the card (a wrong PIN would still count toward its retry limit)."
         )

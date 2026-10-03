@@ -7,6 +7,7 @@ failure never silently catches an expected domain condition too.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,8 @@ from firmauy.errors import (
     OutputExistsError,
     PostSignVerificationError,
     PinError,
+    PinFormatError,
+    PinLastTryError,
     PinLockedError,
     ReaderNotFoundError,
     SigningKeyNotFoundError,
@@ -33,7 +36,7 @@ from firmauy.errors import (
 def test_every_domain_error_is_a_firmauy_error_and_not_a_builtin_one():
     for cls in (
         ReaderNotFoundError, CardNotFoundError, PinError, IncorrectPinError, PinLockedError,
-        TokenNotFoundError, CertificateError, CertificateNotFoundError, CertificateNotValidError,
+        PinFormatError, PinLastTryError, TokenNotFoundError, CertificateError, CertificateNotFoundError, CertificateNotValidError,
         SigningKeyNotFoundError, OutputExistsError, OutputAccessControlError,
         OutputCommittedError, PostSignVerificationError,
     ):
@@ -46,10 +49,28 @@ def test_every_domain_error_is_a_firmauy_error_and_not_a_builtin_one():
 
 
 def test_pin_hierarchy():
-    assert issubclass(IncorrectPinError, PinError)
-    assert issubclass(PinLockedError, PinError)
+    for cls in (IncorrectPinError, PinLockedError, PinFormatError, PinLastTryError):
+        assert issubclass(cls, PinError)
     assert IncorrectPinError("x").attempts_remaining is None
     assert IncorrectPinError("x", attempts_remaining=2).attempts_remaining == 2
+
+
+def test_the_two_refusals_are_not_one_another():
+    """A typo is fixed by typing again and a card on its last try only by unblocking it. One class
+    for both is what had a GUI telling them apart by when its prompt had run."""
+    assert not issubclass(PinFormatError, PinLastTryError)
+    assert not issubclass(PinLastTryError, PinFormatError)
+
+
+def test_firmauy_never_raises_a_bare_pin_error():
+    """PinError's docstring promises a subclass every time, so a caller can tell the four apart
+    without reading the message. A bare one added later would break that quietly, because every
+    existing ``except PinError`` would still catch it."""
+    src = Path(__file__).resolve().parent.parent / "src" / "firmauy"
+    bare = [f"{path.name}:{number}" for path in sorted(src.glob("*.py"))
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if re.search(r"\braise PinError\b", line)]
+    assert bare == []
 
 
 def test_certificate_hierarchy():

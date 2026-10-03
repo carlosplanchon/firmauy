@@ -559,7 +559,8 @@ Any failure, in these commands and in the verify commands, is reported the same 
 {"schema_version": 2, "ok": false, "error_code": "incorrect_pin", "error": "Incorrect PIN."}
 ```
 
-`error_code` is one of `incorrect_pin`, `pin_locked`, `pin_error`, `reader_not_found`,
+`error_code` is one of `incorrect_pin`, `pin_locked`, `pin_error` (refused before the card: a
+malformed PIN, or a card on its last try, as the message says), `reader_not_found`,
 `card_not_found`, `token_not_found`, `certificate_not_found`, `certificate_not_valid`,
 `certificate_error`, `signing_key_not_found`, `output_exists`, `output_committed`,
 `output_access_control`, `post_sign_verification_failed`, `detached_original_required`,
@@ -1123,8 +1124,10 @@ firmauy validate-ci 12345672 --json
 firmauy validate-ci 12345672 --json --redact
 ```
 
-Exit codes make it scriptable: `0` valid, `1` invalid, `2` malformed input. The JSON record carries
-the usual `schema_version` and the top-level `redacted` flag:
+Exit codes make it scriptable: `0` valid, `1` invalid, `2` malformed input. Only the digits 0-9
+make a number: one written in another script, such as `١٢٣٤٥٦٧٢`, is malformed input. Before 1.20.0
+it exited `1` even when the number was correct. The JSON record carries the usual `schema_version`
+and the top-level `redacted` flag:
 
 ```json
 { "schema_version": 2, "redacted": false, "valid": true, "input": "1.234.567-2",

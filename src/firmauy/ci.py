@@ -21,12 +21,15 @@ _SEPARATORS = re.compile(r"[.\-\s]")
 def normalize_ci(text: str) -> str:
     """Strip the usual separators (dots, dashes, spaces) and return the digits of a CI string.
 
-    Raises ValueError if the input is empty, contains non-digit characters, or is longer than 8
-    digits (a 7-digit body plus one check digit)."""
+    Raises ValueError if the input is empty, contains anything but the digits 0-9, or is longer
+    than 8 digits (a 7-digit body plus one check digit)."""
     digits = _SEPARATORS.sub("", text)
     if not digits:
         raise ValueError("empty cédula number")
-    if not digits.isdigit():
+    # isascii() as well as isdigit(), as for the PIN: the latter is also true for '٢', '２' and
+    # '²'. A correct number written with the first two came back invalid, because the check digit
+    # is compared as text, and the third reached int(), which refuses it in words about int().
+    if not (digits.isascii() and digits.isdigit()):
         raise ValueError(f"cédula number has non-digit characters: {text!r}")
     if len(digits) > 8:
         raise ValueError(f"cédula number too long ({len(digits)} digits, max 8): {text!r}")
@@ -36,7 +39,7 @@ def normalize_ci(text: str) -> str:
 def ci_check_digit(body: str) -> int:
     """Return the check digit (0-9) for a CI body of up to 7 digits (left-padded with zeros)."""
     body = body.zfill(7)
-    if len(body) != 7 or not body.isdigit():
+    if len(body) != 7 or not (body.isascii() and body.isdigit()):
         raise ValueError(f"cédula body must be up to 7 digits: {body!r}")
     total = sum(int(d) * w for d, w in zip(body, _WEIGHTS))
     return (10 - total % 10) % 10

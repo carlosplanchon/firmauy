@@ -41,6 +41,8 @@ from firmauy.errors import (
     OutputExistsError as OutputExistsError,
     PostSignVerificationError as PostSignVerificationError,
     PinError as PinError,
+    PinFormatError as PinFormatError,
+    PinLastTryError as PinLastTryError,
     PinLockedError as PinLockedError,
     ReaderNotFoundError as ReaderNotFoundError,
     SigningKeyNotFoundError as SigningKeyNotFoundError,
@@ -1012,7 +1014,12 @@ def validate_ci(text: str) -> CiReport:
 
     This is NOT an identity or document check: it only verifies the number's check digit is
     internally consistent, catching typos and malformed numbers. Needs no card. Raises
-    ``ValueError`` if ``text`` is not a usable cédula string (non-digits, empty, or wrong length).
+    ``ValueError`` if ``text`` is not a usable cédula string (anything but the digits 0-9, empty,
+    or wrong length).
+
+    .. versionchanged:: 1.20.0
+       Digits from other scripts, such as ``١٢٣٤٥٦٧٢``, raise ``ValueError``. They used to come
+       back ``valid=False`` for a correct number, or raise from ``int()`` for ``²``.
     """
     from firmauy.ci import validate_ci as _validate_ci
 
@@ -1023,6 +1030,9 @@ def complete_ci(body: str) -> str:
     """Return the full cédula number for a body without its check digit (appends the check digit).
 
     Needs no card. Raises ``ValueError`` if ``body`` is malformed or longer than 7 digits.
+
+    .. versionchanged:: 1.20.0
+       Only the digits 0-9 make a body. ``١٢٣٤٥٦٧`` used to come back as ``١٢٣٤٥٦٧2``.
     """
     from firmauy.ci import complete_ci as _complete_ci
 
@@ -1147,8 +1157,8 @@ def list_certs(
     :class:`CertInfo`.
 
     With ``pin``, the login is refused before it is attempted when the token reports the PIN as
-    locked (:class:`PinLockedError`) or on its last try (:class:`PinError`), and a wrong PIN raises
-    :class:`IncorrectPinError`, as when signing.
+    locked (:class:`PinLockedError`) or on its last try (:class:`PinLastTryError`), and a wrong
+    PIN raises :class:`IncorrectPinError`, as when signing.
 
     .. versionchanged:: 1.18.0
        The PIN state is checked before the login, and the module's own PIN exceptions no longer

@@ -520,7 +520,7 @@ requires-dist = [
     { name = "reportlab", specifier = ">=5.0.0" },
     { name = "requests", specifier = ">=2.33.0" },
     { name = "typer", specifier = ">=0.26.8" },
-    { name = "urllib3", specifier = ">=2.6" },
+    { name = "urllib3", specifier = ">=2.8.0" },
 ]
 
 [package.metadata.requires-dev]

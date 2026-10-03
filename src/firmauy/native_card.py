@@ -33,7 +33,7 @@ from pyhanko_certvalidator.registry import SimpleCertificateStore
 
 from firmauy.card_reader import ber_length, check_sw, read_file, transmit_collect
 from firmauy.cert_utils import to_asn1_cert, to_asn1_certs
-from firmauy.errors import IncorrectPinError, PinError, PinLockedError
+from firmauy.errors import IncorrectPinError, PinFormatError, PinLastTryError, PinLockedError
 from firmauy.national_ca import load_bundled_trust_anchors
 
 CERT_FID = 0xB001   # signing certificate EF (public, no PIN)
@@ -114,7 +114,7 @@ def check_pin_status(conn):
             "with an unknown retry counter. This card may not support native mode."
         )
     if status <= 1:
-        raise PinError(
+        raise PinLastTryError(
             f"Only {status} PIN try left: aborting for safety. Unblock the cédula before retrying."
         )
     return status
@@ -132,9 +132,9 @@ def verify_pin(conn, pin: str) -> None:
     try:
         pin_bytes = pin.encode("ascii")
     except UnicodeEncodeError:
-        raise PinError("PIN must be ASCII digits.")
+        raise PinFormatError("PIN must be ASCII digits.")
     if not 4 <= len(pin_bytes) <= 8:
-        raise PinError("PIN must be 4..8 digits.")
+        raise PinFormatError("PIN must be 4..8 digits.")
     body = list(pin_bytes) + [0x00] * (12 - len(pin_bytes))   # zero-pad to the stored length of 12
     _, sw1, sw2 = conn.transmit([0x00, 0x20, 0x00, PIN_REF, 0x0C] + body)
     if sw1 == 0x63:

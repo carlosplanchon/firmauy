@@ -35,7 +35,7 @@ from firmauy.verify_common import Check, VerifyResult
 
 import firmauy.cli as cli
 import firmauy.signing as signing
-from firmauy.errors import PinError, PinLockedError
+from firmauy.errors import PinLastTryError, PinLockedError
 
 runner = CliRunner()
 
@@ -1207,6 +1207,12 @@ def test_validate_ci_malformed_exit_two():
     assert runner.invoke(app, ["validate-ci", "abc"]).exit_code == 2
 
 
+def test_validate_ci_other_digit_sets_are_malformed_not_invalid():
+    """1234567-2 in Arabic-Indic digits is a correct number, and it exited 1, INVALID. A script
+    reading the exit code was told a correct cédula was wrong."""
+    assert runner.invoke(app, ["validate-ci", "١٢٣٤٥٦٧٢"]).exit_code == 2
+
+
 def test_validate_ci_json_full_record():
     result = runner.invoke(app, ["validate-ci", "1.234.567-2", "--json"])
     assert result.exit_code == 0
@@ -1501,7 +1507,7 @@ def _pkcs11_session(**kwargs):
 
 @pytest.mark.parametrize("flags, error", [
     (pkcs11.TokenFlag.USER_PIN_LOCKED, PinLockedError),
-    (pkcs11.TokenFlag.USER_PIN_FINAL_TRY, PinError),
+    (pkcs11.TokenFlag.USER_PIN_FINAL_TRY, PinLastTryError),
 ], ids=["locked", "final-try"])
 def test_pkcs11_session_refuses_the_pin_state_the_token_reports_before_asking(
         monkeypatch, flags, error):
@@ -3140,6 +3146,18 @@ def test_error_codes_follow_the_class_hierarchy():
     assert _error_code(OutputExistsError("x")) == "output_exists"
     assert _error_code(typer.BadParameter("x")) == "invalid_argument"
     assert _error_code(RuntimeError("x")) == "operation_failed"
+
+
+def test_the_two_pin_refusals_keep_the_code_scripts_already_read():
+    """Both were a bare PinError until 1.20.0, so a script reading pin_error has always seen them
+    as that. The classes are for the API, where a caller branches on the type; on the terminal
+    the message already says which. A code of their own would turn pin_error into one this
+    script does not know, which the documentation says to treat as operation_failed."""
+    from firmauy.cli import _error_code
+    from firmauy.errors import PinFormatError
+
+    assert _error_code(PinFormatError("x")) == "pin_error"
+    assert _error_code(PinLastTryError("x")) == "pin_error"
 
 
 def test_a_timestamp_that_did_not_come_back_has_codes_of_its_own():

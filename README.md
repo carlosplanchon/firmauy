@@ -216,7 +216,8 @@ login, so a certificate without a key still shows up only after the PIN. Both re
 is even asked for, to spend the card's last PIN try: native reads the card's counter, PKCS#11 relies
 on the module reporting it (OpenSC does). Domain conditions raise typed exceptions: a wrong PIN is
 `IncorrectPinError` (carrying `attempts_remaining` on the native path), a locked card is
-`PinLockedError`, an existing output is `OutputExistsError`, and so on.
+`PinLockedError`, that last-try refusal is `PinLastTryError`, an existing output is
+`OutputExistsError`, and so on.
 
 The full surface (every signature format, whole batches in one card session, reading the cédula's
 identity and photo, listing readers, tokens and certificates, diagnostics, check-digit validation)

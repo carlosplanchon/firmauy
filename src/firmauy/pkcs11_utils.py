@@ -16,7 +16,7 @@ from firmauy.errors import (
     CertificateNotFoundError,
     CertificateNotValidError,
     IncorrectPinError,
-    PinError,
+    PinLastTryError,
     PinLockedError,
     SigningKeyNotFoundError,
     TokenNotFoundError,
@@ -235,7 +235,7 @@ def check_pin_status(token: pkcs11.Token) -> None:
     if flags & pkcs11.TokenFlag.USER_PIN_LOCKED:
         raise PinLockedError("The PIN is locked (too many incorrect attempts).")
     if flags & pkcs11.TokenFlag.USER_PIN_FINAL_TRY:
-        raise PinError(
+        raise PinLastTryError(
             "Only 1 PIN try left: aborting for safety. Unblock the cédula before retrying."
         )
 

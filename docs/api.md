@@ -548,13 +548,16 @@ The domain conditions raise typed exceptions (importable from `firmauy.api` or `
 so a GUI or script can branch on what happened instead of matching message text:
 
 ```python
-from firmauy.api import sign, IncorrectPinError, PinLockedError, CardNotFoundError
+from firmauy.api import (sign, CardNotFoundError, IncorrectPinError, PinFormatError,
+                         PinLastTryError, PinLockedError)
 
 try:
     report = sign("contract.pdf", pin_provider=ask_pin)
 except IncorrectPinError as exc:
     retry(attempts=exc.attempts_remaining)   # None when the backend cannot know (PKCS#11)
-except PinLockedError:
+except PinFormatError:
+    retry()                                  # never reached the card, no try spent
+except (PinLockedError, PinLastTryError):
     show_unblock_help()
 except CardNotFoundError:
     ask_to_insert_card()
@@ -563,8 +566,11 @@ except CardNotFoundError:
 The hierarchy, under a common `FirmaUYError` base:
 
 - `ReaderNotFoundError`, `CardNotFoundError`: no reader / reader present but no card.
-- `PinError`: base for PIN problems, with `IncorrectPinError` (carries `attempts_remaining` on the
-  native path) and `PinLockedError`.
+- `PinError`: base for PIN problems, never raised itself. `IncorrectPinError` (carries
+  `attempts_remaining` on the native path) and `PinLockedError` come from the card.
+  `PinFormatError` (empty, not digits, or not 4 to 8 of them) and `PinLastTryError` (one try
+  left, or none, which firmauy will not spend) are refusals before anything reaches it. Those two
+  are new in 1.20.0; before, both were a bare `PinError`.
 - `CertificateError`: base, with `CertificateNotFoundError`, `CertificateNotValidError` (expired
   or not yet valid) and `SigningKeyNotFoundError`, plus `TokenNotFoundError` for the PKCS#11 module.
 - `OutputExistsError`: the output file exists and `overwrite` was not passed (carries `path`).

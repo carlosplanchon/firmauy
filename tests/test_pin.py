@@ -126,3 +126,15 @@ class TestResolveFinalPin:
 
         with pytest.raises(PinError, match="digits only"):
             _resolve_final_pin(None, lambda: "no-soy-un-pin")
+
+    @pytest.mark.parametrize("value", ["", "abcd", "12e4", "١٢٣٤", "123", "123456789"],
+                             ids=["empty", "letters", "typo", "arabic-indic", "short", "long"])
+    def test_every_refusal_here_is_a_format_error(self, value):
+        """The class says what fixes it: typing the PIN again. The last-try refusal needs the card
+        unblocked instead, and was the same bare PinError until 1.20.0, which left a GUI telling
+        the two apart by whether its prompt had run."""
+        from firmauy.errors import PinFormatError
+
+        with pytest.raises(PinFormatError) as exc:
+            self._resolve(value)
+        assert type(exc.value) is PinFormatError

@@ -12,7 +12,7 @@ from firmauy.errors import (
     CertificateNotFoundError,
     CertificateNotValidError,
     IncorrectPinError,
-    PinError,
+    PinLastTryError,
     PinLockedError,
 )
 from firmauy.pkcs11_utils import (
@@ -287,9 +287,9 @@ class TestCheckPinStatus:
             check_pin_status(_FakeToken(flags=pkcs11.TokenFlag.USER_PIN_LOCKED))
 
     def test_the_final_try_is_refused(self):
-        with pytest.raises(PinError, match="Only 1 PIN try left") as exc:
+        with pytest.raises(PinLastTryError, match="Only 1 PIN try left") as exc:
             check_pin_status(_FakeToken(flags=pkcs11.TokenFlag.USER_PIN_FINAL_TRY))
-        assert type(exc.value) is PinError
+        assert type(exc.value) is PinLastTryError
 
     def test_a_low_count_alone_is_not_refused(self):
         check_pin_status(_FakeToken(flags=pkcs11.TokenFlag.USER_PIN_COUNT_LOW))

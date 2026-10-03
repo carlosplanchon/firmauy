@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.serialization import Encoding
 from cryptography.x509.oid import NameOID
 
 from firmauy import native_card
-from firmauy.errors import PinError, PinLockedError
+from firmauy.errors import PinFormatError, PinLastTryError, PinLockedError
 from firmauy.native_card import _ALGO_HASH, check_pin_status, sign_message, verify_pin
 
 # APDU headers from docs/card-protocol.md.
@@ -174,13 +174,24 @@ def test_verify_pin_blocked_aborts():
     assert all(len(a) == 4 for a in conn.log)            # only the status probe; no VERIFY attempt
 
 
-def test_verify_pin_one_try_left_aborts():
-    from firmauy.errors import PinError
-
-    conn = FakeConn(pin_status=(0x63, 0x01))
-    with pytest.raises(PinError, match="try left"):
+@pytest.mark.parametrize("tries", [1, 0])
+def test_verify_pin_one_try_left_aborts(tries):
+    conn = FakeConn(pin_status=(0x63, tries))
+    with pytest.raises(PinLastTryError, match="try left") as exc:
         verify_pin(conn, "1234")
+    assert type(exc.value) is PinLastTryError
     assert conn.log == [[0x00, 0x20, 0x00, 0x11]]        # probed, then refused to spend the last try
+
+
+@pytest.mark.parametrize("pin", ["١٢٣٤", "123", "123456789"])
+def test_verify_pin_refuses_a_malformed_pin_as_a_format_error(pin):
+    """Its own checks, behind the one every signature goes through first, and the same class:
+    a caller should not have to know which layer said no to know what to tell the person."""
+    conn = FakeConn(pin_status=(0x63, 0x03))
+    with pytest.raises(PinFormatError) as exc:
+        verify_pin(conn, pin)
+    assert type(exc.value) is PinFormatError
+    assert conn.log == [[0x00, 0x20, 0x00, 0x11]]        # the probe only: nothing reached VERIFY
 
 
 def test_verify_pin_already_verified_is_noop():
@@ -236,7 +247,7 @@ def _native_session(monkeypatch, conn, **kwargs):
 
 @pytest.mark.parametrize("pin_status, error, match", [
     ((0x69, 0x83), PinLockedError, "blocked"),
-    ((0x63, 0x01), PinError, "try left"),
+    ((0x63, 0x01), PinLastTryError, "try left"),
     ((0x67, 0x00), RuntimeError, "status probe"),
 ], ids=["blocked", "last-try", "unknown-counter"])
 def test_native_session_refuses_the_pin_state_before_asking(

@@ -39,7 +39,13 @@ dependencies = [
     "reportlab>=5.0.0",
     "requests>=2.33.0",
     "typer>=0.26.8",
-    "urllib3>=2.6",
+    # outbound.py streams the TSA response and the revocation fetches through it, from URLs a
+    # certificate in someone else's document can name. 2.8.0 fixes three advisories on that path:
+    # GHSA-vxq7-64xx-v4gw (an unbounded chunk-size line held in memory), GHSA-gh4c-6fx4-qh6g (an
+    # endless loop inflating a chunked deflate body), GHSA-8988-9cw3-xx77 (an HTTPS proxy's TLS
+    # settings overridden by the destination's). uv.lock pins 2.8.0 already, but a lock binds only
+    # what is installed from this repository: whoever installs the wheel gets what this admits.
+    "urllib3>=2.8.0",
 ]
 
 [project.urls]

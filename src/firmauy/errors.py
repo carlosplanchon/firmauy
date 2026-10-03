@@ -48,7 +48,38 @@ class CardNotFoundError(FirmaUYError):
 
 
 class PinError(FirmaUYError):
-    """Base class for PIN problems (bad format, empty, or the low-retries safety guard)."""
+    """Base class for PIN problems. firmauy raises one of the four below and never this class
+    itself, so catching it catches all of them and catching a subclass catches one.
+
+    .. versionchanged:: 1.20.0
+       A malformed PIN and the last-try refusal were raised as this class, and have their own now.
+    """
+
+
+class PinFormatError(PinError):
+    """The PIN is not one a cédula can have, so it was refused before reaching the card and no try
+    was spent: empty, anything but the digits 0-9, or not 4 to 8 of them.
+
+    Typing it again fixes this, which is the opposite of :class:`PinLastTryError`, and the reason
+    they are two classes: a caller answering both the same way either asks again for a PIN that
+    cannot be used, or tells somebody with a typo to go and unblock their card.
+
+    .. versionadded:: 1.20.0
+       Previously a bare :class:`PinError`, the same class as the last-try refusal.
+    """
+
+
+class PinLastTryError(PinError):
+    """The card has one PIN try left, or none, and firmauy will not spend it: no PIN was sent.
+
+    Both backends check before calling ``pin_provider``, the native one from the card's own counter
+    and PKCS#11 when the module reports it, so this normally comes before any prompt. The native
+    backend checks once more right before sending the PIN, so it can also come after one, if the
+    counter dropped in between. Only unblocking the cédula fixes it; another PIN cannot.
+
+    .. versionadded:: 1.20.0
+       Previously a bare :class:`PinError`, the same class as a malformed PIN.
+    """
 
 
 class IncorrectPinError(PinError):

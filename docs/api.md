@@ -524,6 +524,10 @@ validate_ci("1.234.567-8").valid    # True / False
 complete_ci("1234567")              # body + its check digit
 ```
 
+> **Changed in 1.20.0:** only the digits 0-9 make a number. One written in another script, such as
+> `١٢٣٤٥٦٧٢`, raises `ValueError`. It used to come back `valid=False` even when it was correct, and
+> a `²` raised from `int()`.
+
 ## Re-fetch the pinned national CA certificates
 
 `fetch_cas()` downloads the national CAs (root + intermediate) into a per-user cache. Verification
@@ -569,8 +573,7 @@ The hierarchy, under a common `FirmaUYError` base:
 - `PinError`: base for PIN problems, never raised itself. `IncorrectPinError` (carries
   `attempts_remaining` on the native path) and `PinLockedError` come from the card.
   `PinFormatError` (empty, not digits, or not 4 to 8 of them) and `PinLastTryError` (one try
-  left, or none, which firmauy will not spend) are refusals before anything reaches it. Those two
-  are new in 1.20.0; before, both were a bare `PinError`.
+  left, or none, which firmauy will not spend) are refusals before anything reaches it.
 - `CertificateError`: base, with `CertificateNotFoundError`, `CertificateNotValidError` (expired
   or not yet valid) and `SigningKeyNotFoundError`, plus `TokenNotFoundError` for the PKCS#11 module.
 - `OutputExistsError`: the output file exists and `overwrite` was not passed (carries `path`).
@@ -667,6 +670,11 @@ diagnose the environment in a structured way.
 > `TimestampRequestError`, which is an `OSError`. It does **not** inherit `OSError`, so an
 > `except OSError` or `except TimestampRequestError` that used to catch it no longer does. Catch
 > the new class, or `FirmaUYError`.
+
+> **Changed in 1.20.0:** a malformed PIN raises `PinFormatError` and the last-try refusal
+> `PinLastTryError`. Both used to be a bare `PinError`, and both subclass it, so an
+> `except PinError` still catches them. Code that told the two apart by the message can branch on
+> the class instead. The CLI's `error_code` stays `pin_error` for both.
 
 ## Notes
 

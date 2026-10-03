@@ -235,6 +235,44 @@ class DetachedOriginalRequiredError(FirmaUYError):
 
 
 # ---------------------------------------------------------------------------
+# Timestamps
+# ---------------------------------------------------------------------------
+
+
+class TimestampError(FirmaUYError):
+    """The signature timestamp could not be obtained, and the signature was not written.
+
+    The TSA could not be reached, refused the request, answered with something that is not a
+    timestamp, or sent back a token for a different request. The message says which, and the
+    exception underneath, when there is one, is ``__cause__``.
+
+    .. versionadded:: 1.19.0
+       Previously pyHanko's ``TimestampRequestError``, an ``OSError``, which put a condition a
+       caller can act on (fix the TSA URL, try again later) in the same ``except`` as an
+       environment failure.
+    """
+
+
+class TimestampDestinationRefusedError(TimestampError):
+    """The TSA URL leads to an address the outbound policy refuses, so nothing was sent to it.
+
+    ``host`` is the name in the URL and ``addresses`` what it resolved to. With ``link_local``
+    false the address is loopback or private, and ``allow_private_network=True`` reaches it on
+    purpose. With ``link_local`` true it is refused even then: that range is where cloud metadata
+    services answer, so a caller offering the opt-in for it would offer a dead end.
+
+    .. versionadded:: 1.19.0
+    """
+
+    def __init__(self, message: str, *, host: Optional[str] = None, addresses=(),
+                 link_local: bool = False):
+        super().__init__(message)
+        self.host = host
+        self.addresses = tuple(addresses)
+        self.link_local = link_local
+
+
+# ---------------------------------------------------------------------------
 # Batches
 # ---------------------------------------------------------------------------
 

@@ -3142,6 +3142,16 @@ def test_error_codes_follow_the_class_hierarchy():
     assert _error_code(RuntimeError("x")) == "operation_failed"
 
 
+def test_a_timestamp_that_did_not_come_back_has_codes_of_its_own():
+    """Before 1.19.0 it was pyHanko's OSError and the table had nothing for it: operation_failed,
+    the code a script cannot act on, for the one failure where the fix is usually a setting."""
+    from firmauy.cli import _error_code
+    from firmauy.errors import TimestampDestinationRefusedError, TimestampError
+
+    assert _error_code(TimestampError("x")) == "timestamp_failed"
+    assert _error_code(TimestampDestinationRefusedError("x")) == "timestamp_destination_refused"
+
+
 def test_sign_batch_json_reports_each_file(monkeypatch, tmp_path):
     """Counts alone cannot tell a script which file failed or why, which is the reason to ask a
     batch for JSON in the first place."""

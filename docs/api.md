@@ -627,6 +627,16 @@ The hierarchy, under a common `FirmaUYError` base:
   check it against, and the `<x>.p7s -> <x>` sibling is missing. Carries `p7s_path` and `expected`,
   so a GUI can name the file it wants. The two files routinely travel separately by email, so this
   is a recoverable situation, not a programming error.
+- `TimestampError`: a `tsa_url` was given and no timestamp came back, so the signature was not
+  written. The TSA could not be reached, refused the request, answered with something that is not a
+  timestamp, or sent back a token for a different request. The message says which, and what was
+  underneath, when there was something, is `__cause__`. In a batch it is the `__cause__` of the
+  `BatchSignError` for the file it stopped at. *New in 1.19.0.*
+- `TimestampDestinationRefusedError`, a `TimestampError`: the `tsa_url` leads to an address the
+  outbound policy refuses, so nothing was sent to it. Carries `host`, `addresses` and `link_local`.
+  With `link_local` false the address is loopback or private and `allow_private_network=True`
+  reaches it on purpose; with it true the address is refused even then, so a GUI should not offer
+  that switch as the way out. *New in 1.19.0.*
 - `BatchSignError`: `sign_files()` stopped at one file. Carries `completed` (finished outputs,
   which can include the file at `failed_index`), `failed_index`, `failed_path`,
   `callback_error` for a `progress` or `should_continue` that raised, and the real failure as
@@ -646,6 +656,11 @@ diagnose the environment in a structured way.
 > **Changed in 1.10.0:** a detached `.p7s` with no original now raises `DetachedOriginalRequiredError`
 > instead of a bare `ValueError`. It does **not** inherit `ValueError`, so an `except ValueError`
 > that used to catch it no longer does. Catch the new class, or `FirmaUYError`.
+
+> **Changed in 1.19.0:** a failed timestamp now raises `TimestampError` instead of pyHanko's
+> `TimestampRequestError`, which is an `OSError`. It does **not** inherit `OSError`, so an
+> `except OSError` or `except TimestampRequestError` that used to catch it no longer does. Catch
+> the new class, or `FirmaUYError`.
 
 ## Notes
 

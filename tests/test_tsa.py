@@ -438,3 +438,136 @@ def test_the_builder_passes_the_opt_in_on_and_notes_it_when_there_is_no_tsa():
     assert not _b(tsa_url="https://tsa.example/tsr").allow_private_network
     assert _b(allow_private_network=True, notify=notes.append) is None
     assert any("--allow-private-network only applies" in n for n in notes)
+
+
+# --- what a timestamp that did not come back raises -------------------------
+
+def _request():
+    from asn1crypto import tsp
+
+    return tsp.TimeStampReq({
+        "version": 1,
+        "message_imprint": tsp.MessageImprint({
+            "hash_algorithm": {"algorithm": "sha256"},
+            "hashed_message": b"\x00" * 32,
+        }),
+    })
+
+
+def _answering(body: bytes, content_type: str = "application/timestamp-reply"):
+    """A TSA that answers every request with ``body``."""
+    import http.server
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    return _tsa_server(Handler)
+
+
+def _a_domain_condition(exc):
+    """What 1.19.0 changed: a FirmaUYError, and not an OSError, so ``except OSError`` written for
+    environment failures does not swallow a TSA that said no."""
+    from firmauy.api import FirmaUYError, TimestampError
+
+    assert isinstance(exc, TimestampError) and isinstance(exc, FirmaUYError)
+    assert not isinstance(exc, OSError)
+
+
+def test_a_private_tsa_raises_its_own_class_with_what_it_resolved_to():
+    """A caller has to tell this one apart from the rest: the answer is a setting, not a retry."""
+    import asyncio
+
+    from firmauy.api import TimestampDestinationRefusedError
+
+    stamper = _b(tsa_url="http://127.0.0.1:9/tsr")
+    with pytest.raises(TimestampDestinationRefusedError, match="--allow-private-network") as got:
+        asyncio.run(stamper.async_request_tsa_response(_request()))
+
+    _a_domain_condition(got.value)
+    assert got.value.host == "127.0.0.1"
+    assert "127.0.0.1" in {str(address) for address in got.value.addresses}
+    assert got.value.link_local is False, "the opt-in would reach this one"
+
+
+def test_a_link_local_tsa_is_refused_even_with_the_opt_in_and_says_so():
+    """The range cloud metadata services answer on. A caller offering allow_private_network as the
+    way out of this one would be offering a switch that changes nothing."""
+    import asyncio
+
+    from firmauy.api import TimestampDestinationRefusedError
+
+    stamper = _b(tsa_url="http://169.254.169.254/tsr", allow_private_network=True)
+    with pytest.raises(TimestampDestinationRefusedError) as got:
+        asyncio.run(stamper.async_request_tsa_response(_request()))
+
+    assert got.value.link_local is True
+
+
+def test_a_tsa_that_refuses_the_request_raises_a_timestamp_error():
+    """pyHanko judges the response and raises its own TimestampRequestError, an OSError, when the
+    TSA says no. Translated at async_timestamp, which every signing path calls."""
+    import asyncio
+
+    from asn1crypto import tsp
+
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    # RFC 3161 leaves timeStampToken out of a refusal, and asn1crypto will not dump a
+    # TimeStampResp without one, so the SEQUENCE around the status is written by hand.
+    status = tsp.PKIStatusInfo({"status": "rejection", "status_string": ["no, gracias"]}).dump()
+    refusal = b"\x30" + bytes([len(status)]) + status
+    srv = _answering(refusal)
+    try:
+        stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/tsr",
+                                         allow_private_network=True)
+        with pytest.raises(Exception, match="refused our request") as got:
+            asyncio.run(stamper.async_timestamp(b"\x00" * 32, "sha256"))
+    finally:
+        srv.shutdown()
+
+    _a_domain_condition(got.value)
+    assert type(got.value.__cause__).__name__ == "TimestampRequestError"
+
+
+def test_bytes_that_are_not_a_timestamp_reply_raise_a_timestamp_error():
+    """The right media type around something that is not DER. It came out of asn1crypto as a bare
+    ValueError, which reads as a bug in the caller rather than as a TSA answering nonsense."""
+    import asyncio
+
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    srv = _answering(b"esto no es un sello de tiempo")
+    try:
+        stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{srv.server_port}/tsr",
+                                         allow_private_network=True)
+        with pytest.raises(Exception, match="malformed") as got:
+            asyncio.run(stamper.async_request_tsa_response(_request()))
+    finally:
+        srv.shutdown()
+
+    _a_domain_condition(got.value)
+
+
+def test_a_tsa_nobody_is_listening_on_raises_a_timestamp_error():
+    import asyncio
+    import socket
+
+    from firmauy.signing import _NoRedirectTimeStamper
+
+    with socket.socket() as probe:              # a port that was free a moment ago
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    stamper = _NoRedirectTimeStamper(f"http://127.0.0.1:{port}/tsr", allow_private_network=True)
+    with pytest.raises(Exception, match="communication with timestamp server") as got:
+        asyncio.run(stamper.async_request_tsa_response(_request()))
+
+    _a_domain_condition(got.value)

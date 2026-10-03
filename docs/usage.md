@@ -563,8 +563,11 @@ Any failure, in these commands and in the verify commands, is reported the same 
 `card_not_found`, `token_not_found`, `certificate_not_found`, `certificate_not_valid`,
 `certificate_error`, `signing_key_not_found`, `output_exists`, `output_committed`,
 `output_access_control`, `post_sign_verification_failed`, `detached_original_required`,
+`timestamp_destination_refused` (the `--tsa-url` is not a public address, see
+`--allow-private-network`), `timestamp_failed` (any other reason there was no timestamp),
 `file_not_found`, `invalid_argument`, or `operation_failed` for anything else. Codes may be added
-later, so treat one you do not know like `operation_failed`.
+later, so treat one you do not know like `operation_failed`. The two timestamp codes are new in
+1.19.0; before, a failed timestamp came out as `operation_failed`.
 
 ## Verify a signed file (auto-detect)
 

@@ -44,6 +44,8 @@ from firmauy.errors import (
     PinLockedError as PinLockedError,
     ReaderNotFoundError as ReaderNotFoundError,
     SigningKeyNotFoundError as SigningKeyNotFoundError,
+    TimestampDestinationRefusedError as TimestampDestinationRefusedError,
+    TimestampError as TimestampError,
     TokenNotFoundError as TokenNotFoundError,
 )
 

@@ -23,6 +23,7 @@ from typing import Callable, List, NamedTuple, Optional
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo
 import pkcs11
+from asn1crypto import cms, tsp
 from cryptography import x509
 from pyhanko import stamp
 from pyhanko.pdf_utils.incremental_writer import IncrementalPdfFileWriter
@@ -53,6 +54,8 @@ from firmauy.errors import (
     OutputExistsError,
     PostSignVerificationError,
     PinError,
+    TimestampDestinationRefusedError,
+    TimestampError,
 )
 from firmauy.constants import (
     DEFAULT_IMAGE_OPACITY,
@@ -306,6 +309,21 @@ _SENSITIVE_HEADERS = frozenset({
 })
 
 
+class _TimeStampResp(tsp.TimeStampResp):
+    """asn1crypto's TimeStampResp with the token optional, as RFC 3161 section 2.4.2 has it.
+
+    asn1crypto 1.5.1 declares ``time_stamp_token`` required, and a TSA that refuses a request sends
+    the status alone, as the RFC says it should. Measured: reading such a response raised
+    ``ValueError: Field "time_stamp_token" is missing`` at pyHanko's first look at the status, so
+    "the TSA refused, and here is why" came out as a parsing failure with the reason unread.
+    """
+
+    _fields = [
+        ("status", tsp.PKIStatusInfo),
+        ("time_stamp_token", cms.ContentInfo, {"optional": True}),
+    ]
+
+
 class _NoRedirectTimeStamper(TimeStamper):
     """A timestamper that refuses to follow redirects.
 
@@ -351,11 +369,24 @@ class _NoRedirectTimeStamper(TimeStamper):
             "Accept": "application/timestamp-reply",
         }
 
+    async def async_timestamp(self, message_digest, md_algorithm):
+        """pyHanko's request and response handling, with its failures as :class:`TimestampError`.
+
+        The request below raises firmauy's own errors. The response is pyHanko's to judge, and
+        ``handle_tsp_response`` raises its ``TimestampRequestError`` (an ``OSError``) when the TSA
+        refuses the request or answers with a nonce from somebody else's. Translated here, at the
+        one method every signing path goes through, PAdES, XAdES and CAdES alike, so a caller
+        meets one class for "no timestamp" whichever side of the exchange went wrong.
+        """
+        from pyhanko.sign.timestamps.common_utils import TimestampRequestError
+
+        try:
+            return await super().async_timestamp(message_digest, md_algorithm)
+        except TimestampRequestError as exc:
+            raise TimestampError(str(exc)) from exc
+
     async def async_request_tsa_response(self, req):
         from asyncio import to_thread
-
-        from asn1crypto import tsp
-        from pyhanko.sign.timestamps.common_utils import TimestampRequestError
 
         from firmauy import outbound
 
@@ -369,27 +400,40 @@ class _NoRedirectTimeStamper(TimeStamper):
                     data=req.dump(), headers=self.request_headers(), auth=self.auth,
                     expect_content_type="application/timestamp-reply")
             except outbound.RedirectRefused as exc:
-                raise TimestampRequestError(
+                raise TimestampError(
                     f"The timestamp server answered {exc.status_code} (a redirect) instead of a "
                     "timestamp. Refusing to follow it: a redirect can carry request headers, "
                     "credentials among them, to a destination nobody asked for, and can downgrade "
                     "to plain HTTP on the way. Point --tsa-url at the endpoint directly."
                 ) from exc
             except outbound.UnexpectedContentType as exc:
-                raise TimestampRequestError("Timestamp server response is malformed.") from exc
+                raise TimestampError("Timestamp server response is malformed.") from exc
             except outbound.ResponseTooLarge as exc:
-                raise TimestampRequestError(
+                raise TimestampError(
                     f"Timestamp server response exceeds the {limit} byte limit; refusing to "
                     "parse it."
                 ) from exc
-            except outbound.OutboundError as exc:
-                # A refused destination names --allow-private-network, a deadline its seconds.
-                raise TimestampRequestError(str(exc)) from exc
-            except OSError as exc:
-                raise TimestampRequestError(
-                    "Error in communication with timestamp server",
+            except outbound.DestinationRefused as exc:
+                # Its own class, because the answer is a setting rather than a retry, and
+                # link_local says whether that setting can help at all.
+                raise TimestampDestinationRefusedError(
+                    str(exc), host=exc.host, addresses=exc.addresses, link_local=exc.link_local,
                 ) from exc
-            return tsp.TimeStampResp.load(result.content)
+            except outbound.OutboundError as exc:
+                # A deadline names its seconds, a budget its limit.
+                raise TimestampError(str(exc)) from exc
+            except OSError as exc:
+                raise TimestampError("Error in communication with timestamp server") from exc
+            try:
+                response = _TimeStampResp.load(result.content)
+                # asn1crypto reads lazily, so without this a body that is not a TimeStampResp
+                # would get past here and fail inside pyHanko as a bare ValueError.
+                response["status"]
+            except ValueError as exc:
+                # The right media type around bytes that are not a response: malformed, said the
+                # same way as the wrong media type above.
+                raise TimestampError("Timestamp server response is malformed.") from exc
+            return response
 
         return await to_thread(task)
 

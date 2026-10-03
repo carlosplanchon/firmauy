@@ -94,7 +94,8 @@ The PIN is never placed in argv, results, logs or exception messages.
 
 `firmauy.errors` defines a small hierarchy under `FirmaUYError` for the conditions a caller can
 meaningfully branch on: reader/card presence, PIN outcomes (`IncorrectPinError` carries
-`attempts_remaining` when the backend can know it), certificate problems and existing outputs.
+`attempts_remaining` when the backend can know it), certificate problems, existing outputs, and a
+timestamp that did not come back (`TimestampError`, from 1.19.0, in place of pyHanko's `OSError`).
 
 Two deliberate rules:
 

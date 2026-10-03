@@ -79,6 +79,8 @@ from firmauy.errors import (
     PostSignVerificationError,
     ReaderNotFoundError,
     SigningKeyNotFoundError,
+    TimestampDestinationRefusedError,
+    TimestampError,
     TokenNotFoundError,
 )
 from firmauy._shared import (
@@ -232,6 +234,8 @@ _ERROR_CODES = (
     (OutputAccessControlError, "output_access_control"),
     (PostSignVerificationError, "post_sign_verification_failed"),
     (DetachedOriginalRequiredError, "detached_original_required"),
+    (TimestampDestinationRefusedError, "timestamp_destination_refused"),
+    (TimestampError, "timestamp_failed"),
     (FileNotFoundError, "file_not_found"),
     (typer.BadParameter, "invalid_argument"),
 )

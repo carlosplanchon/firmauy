@@ -193,10 +193,15 @@ class OutboundError(requests.RequestException):
 
 
 class DestinationRefused(OutboundError):
-    def __init__(self, message: str, *, host: Optional[str], addresses=()):
+    """``link_local`` is the refusal no opt-in lifts, which a caller has to tell apart from the one
+    ``allow_private_network`` does: offering the switch for the first would offer a dead end."""
+
+    def __init__(self, message: str, *, host: Optional[str], addresses=(),
+                 link_local: bool = False):
         super().__init__(message)
         self.host = host
         self.addresses = tuple(addresses)
+        self.link_local = link_local
 
 
 class RedirectRefused(OutboundError):
@@ -242,14 +247,15 @@ class _Refused(Exception):
 def _refusal(host: Optional[str], refused: list) -> DestinationRefused:
     address = refused[0]
     where = f"{host}, which resolves to {address}" if host and host != address else f"{address}"
-    if _is_link_local(address):
+    link_local = _is_link_local(address)
+    if link_local:
         why = ("a link-local address, refused even with --allow-private-network: that range is "
                "where cloud metadata services answer, and no TSA or CRL mirror lives there")
     else:
         why = ("not a public address. Pass --allow-private-network (allow_private_network=True "
                "in the API) to reach an internal TSA or CRL/OCSP mirror on purpose")
     return DestinationRefused(f"Refusing to connect to {where}: {why}.", host=host,
-                              addresses=refused)
+                              addresses=refused, link_local=link_local)
 
 
 def _host(url: str) -> str:

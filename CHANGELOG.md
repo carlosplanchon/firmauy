@@ -6,6 +6,11 @@ filled in at run time.
 
 ## 1.21.0
 
+### Python 3.10 is no longer supported
+
+firmauy now requires Python 3.11 or newer (`requires-python = ">=3.11"`). pip and uv will not
+install 1.21.0 on Python 3.10; there, they keep resolving to 1.20.0. CI no longer tests 3.10.
+
 ### Windows support
 
 Signing, `doctor` and the native PC/SC backend now work on Windows (x64). Linux behaviour, output and

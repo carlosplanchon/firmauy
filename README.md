@@ -92,7 +92,7 @@ file inherits its folder's permissions, and nothing is carried over from a file 
 
 ### Python
 
-Python **3.10 or newer**.
+Python **3.11 or newer**.
 
 ### PKCS#11 middleware
 

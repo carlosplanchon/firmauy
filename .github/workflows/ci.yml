@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
       # libpcsclite-dev + swig are build deps for pyscard (a C extension); without the pcsclite
@@ -98,7 +98,7 @@ jobs:
       - name: Run the sweep
         run: FIRMAUY_SWEEP=1 uv run pytest tests/test_sweep_tstinfo.py -q
       # The deep property profile belongs here rather than in `test`, which already runs the
-      # shallow one across five Python versions. Rare counterexamples do not care which
+      # shallow one across four Python versions. Rare counterexamples do not care which
       # interpreter finds them, and this way the matrix stays fast.
       - name: Run the deep property profile
         run: FIRMAUY_DEEP=1 uv run pytest tests/test_properties_timestamp.py -q

@@ -1,6 +1,8 @@
 # Copyright 2026 Carlos Andrés Planchón Prestes
 # Licensed under the Apache License, Version 2.0
 
+import os
+import sys
 from dataclasses import dataclass
 from enum import Enum
 
@@ -70,7 +72,15 @@ STAMP_IMAGE_DPI = 300
 # Default opacity for an image in --image-mode background (subtle watermark, keeps text legible).
 DEFAULT_IMAGE_OPACITY = 0.2
 
-DEFAULT_PKCS11_LIB = "/usr/lib/pkcs11/libgclib.so"
+# The cédula's PKCS#11 module, as its middleware installs it. On Windows that is Thales Classic
+# Client. Its installer also puts a 32-bit copy under "Program Files (x86)", which a 64-bit Python
+# cannot load. %ProgramFiles% names the folder matching this interpreter, so a 64-bit Python gets
+# the 64-bit module.
+if sys.platform == "win32":
+    DEFAULT_PKCS11_LIB = os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"),
+                                      "Thales", "Classic Client", "BIN", "gclib.dll")
+else:
+    DEFAULT_PKCS11_LIB = "/usr/lib/pkcs11/libgclib.so"
 DEFAULT_TIMEZONE = "America/Montevideo"
 
 # Reference dimensions for the signature field:

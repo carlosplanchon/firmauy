@@ -284,7 +284,10 @@ def test_read_file_rejects_offsets_past_15_bit_limit():
 
 def test_list_readers_wraps_pcsc_daemon_failure(monkeypatch):
     smartcard_system = pytest.importorskip("smartcard.System")
+    from firmauy import _platform
     from firmauy.card_reader import list_readers
+
+    monkeypatch.setattr(_platform, "WINDOWS", False)
 
     def boom():
         raise Exception("Failure to establish context: 0x8010001D")

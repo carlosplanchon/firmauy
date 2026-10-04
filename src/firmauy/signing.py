@@ -16,6 +16,7 @@ import os
 import secrets
 import stat
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ from pyhanko.pdf_utils.layout import (
 from pyhanko.sign import fields, signers
 from pyhanko.sign.pkcs11 import PKCS11Signer
 from pyhanko.sign.timestamps import TimeStamper
+from firmauy import _platform
 from firmauy.appearance import ensure_output_parent, make_appearance_pdf
 from firmauy.card_reader import (
     open_reader,
@@ -605,6 +607,27 @@ def _check_backend_options(*, native, reader, pkcs11_lib, token_label, cert_id,
         )
 
 
+# The open flags this module uses, resolved once. O_CLOEXEC, O_NOFOLLOW and O_NONBLOCK do not exist
+# on Windows, so there they are 0 and what they stood for is covered another way: see
+# _capture_replaced and _open_input. O_NOINHERIT is the Windows close-on-exec, and O_BINARY keeps a
+# Windows descriptor from turning every \n written through it into \r\n, which would break a PDF's
+# byte offsets. On POSIX both Windows flags are 0 and the other three are the values these calls
+# always passed, so nothing changes there.
+_O_BINARY = getattr(os, "O_BINARY", 0)
+_O_CLOEXEC = getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOINHERIT", 0)
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
+_O_READ_NOFOLLOW = os.O_RDONLY | _O_CLOEXEC | _O_NOFOLLOW | _O_NONBLOCK | _O_BINARY
+
+# The Windows file attribute that marks a symlink, a junction or any other reparse point. Where
+# O_NOFOLLOW is missing, this is what tells a link apart before anything opens it.
+_FILE_ATTRIBUTE_REPARSE_POINT = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+
+
+def _is_reparse_point(st: os.stat_result) -> bool:
+    return bool(getattr(st, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT)
+
+
 def _open_staging(path: Path):
     """Create a private, unpredictably named staging file beside ``path``: ``(fd, Path)``.
 
@@ -631,7 +654,7 @@ def _open_staging(path: Path):
     for _ in range(_STAGING_ATTEMPTS):
         tmp = path.with_name(f".firmauy-{secrets.token_hex(8)}.part")
         try:
-            return os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666), tmp
+            return os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_BINARY, 0o666), tmp
         except FileExistsError:
             continue
     raise OSError(f"could not create a staging file next to {path}")
@@ -707,8 +730,11 @@ def _capture_replaced(path: Path) -> Optional[_Replaced]:
     absence onto a file that may have had one, which is a decision about who may read a document
     and not a detail to paper over.
     """
+    if _platform.WINDOWS:
+        return _capture_replaced_windows(path)
+
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(path, _O_READ_NOFOLLOW)
     except FileNotFoundError:
         return None
     except OSError as exc:
@@ -724,6 +750,51 @@ def _capture_replaced(path: Path) -> Optional[_Replaced]:
         return _read_replaced(fd, path)
     finally:
         os.close(fd)
+
+
+def _capture_replaced_windows(path: Path) -> Optional[_Replaced]:
+    """The Windows half of :func:`_capture_replaced`: is there a regular file being replaced?
+
+    There is nothing to carry across. Windows has no POSIX owner, group, mode or access ACL, and the
+    file replacing this one inherits its folder's NTFS ACL like any new file there, so the answer
+    always says ``_ACL_UNSUPPORTED`` and :func:`_adopt_replaced` restores nothing. What is kept is
+    the shape of the question: a link, or anything else that is not a regular file, is not the file
+    being replaced, and what is read must describe the file that is at ``path``.
+
+    Without ``O_NOFOLLOW`` a link is recognised before opening, by its reparse-point attribute.
+    Opening then follows a link that appeared in between, so the (device, inode) comparison against
+    that ``lstat`` is what catches the swap. NTFS gives every file a stable file ID, and that is what
+    ``st_ino`` holds there.
+
+    A file that exists but cannot be opened is not a reason to refuse here, unlike on POSIX, because
+    nothing would have been read from it anyway. Whether it may be replaced is the replace's call.
+    """
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise _unreadable(path, exc) from exc
+    if _is_reparse_point(entry) or not stat.S_ISREG(entry.st_mode):
+        return None
+
+    try:
+        fd = os.open(path, _O_READ_NOFOLLOW)
+    except FileNotFoundError:
+        raise _Moved from None
+    except OSError:
+        return None
+    try:
+        current = os.fstat(fd)
+    except OSError as exc:
+        raise _unreadable(path, exc) from exc
+    finally:
+        os.close(fd)
+    if (entry.st_dev, entry.st_ino) != (current.st_dev, current.st_ino):
+        raise _Moved
+
+    return _Replaced(mode=stat.S_IMODE(current.st_mode) & 0o777,
+                     uid=current.st_uid, gid=current.st_gid, acl=_ACL_UNSUPPORTED)
 
 
 def _read_replaced(fd: int, path: Path) -> Optional[_Replaced]:
@@ -890,7 +961,10 @@ def _adopt_replaced(fd: int, path: Path) -> Optional[_Replaced]:
             path=path,
         )
 
-    if replaced is not None:
+    # On Windows the capture is only ever _ACL_UNSUPPORTED with no POSIX owner to give back, and
+    # the staging descriptor is already closed, so there is nothing to restore and nothing to
+    # restore it through. Skipped outright rather than run as a sequence of no-ops.
+    if replaced is not None and not _platform.WINDOWS:
         _restore_replaced(fd, replaced, path)
     return replaced
 
@@ -899,6 +973,18 @@ def _adopt_replaced(fd: int, path: Path) -> Optional[_Replaced]:
 # and exFAT, which keep no link count at all, and a network or FUSE mount may say ENOTSUP or
 # EOPNOTSUPP (one value on Linux, two names) instead.
 _NO_HARD_LINKS = {errno.EPERM, errno.ENOTSUP, errno.EOPNOTSUPP}
+
+# Windows answers with a Win32 error instead: FAT32 and exFAT refuse CreateHardLinkW with
+# ERROR_INVALID_FUNCTION (1), and a network redirector that cannot link says ERROR_NOT_SUPPORTED
+# (50). Python maps both to EINVAL, which is far too broad to recognise on its own, so on Windows
+# the winerror is what is checked. ERROR_ACCESS_DENIED stays out for the same reason EACCES does.
+_NO_HARD_LINKS_WINERROR = {1, 50}
+
+
+def _cannot_hard_link(exc: OSError) -> bool:
+    if _platform.WINDOWS:
+        return getattr(exc, "winerror", None) in _NO_HARD_LINKS_WINERROR
+    return exc.errno in _NO_HARD_LINKS
 
 
 def _no_clobber_refusal(path: Path) -> OutputExistsError:
@@ -931,22 +1017,31 @@ def _commit_without_clobber(tmp: Path, path: Path) -> None:
     Anything else ``os.link`` raises is a different problem and propagates as it is. EPERM is not
     only "no hard links here", it is also an immutable directory, and there the fallback fails on
     the same directory with the same errno, which is the right answer either way.
+
+    On Windows the same holds, with two differences. NTFS has hard links, and ``os.link`` refuses a
+    taken name with ``FileExistsError`` just as POSIX does. FAT32 and exFAT have none, and say so
+    with a Win32 error rather than an errno (see :data:`_NO_HARD_LINKS_WINERROR`). The fallback
+    also has to close the reservation before renaming over it, because Windows will not replace a
+    file that is open, so the reservation is identified by the ``fstat`` taken while it was held.
     """
     try:
         os.link(tmp, path)
     except FileExistsError:
         raise _no_clobber_refusal(path) from None
     except OSError as exc:
-        if exc.errno not in _NO_HARD_LINKS:
+        if not _cannot_hard_link(exc):
             raise
     else:
-        tmp.unlink(missing_ok=True)
+        _discard_staging(tmp)
         return
 
     try:
-        reservation = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+        reservation = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_CLOEXEC, 0o600)
     except FileExistsError:
         raise _no_clobber_refusal(path) from None
+    if _platform.WINDOWS:
+        _replace_reservation_windows(reservation, tmp, path)
+        return
     try:
         os.replace(tmp, path)
     except BaseException:
@@ -961,6 +1056,101 @@ def _commit_without_clobber(tmp: Path, path: Path) -> None:
         raise
     finally:
         os.close(reservation)
+
+
+def _replace_reservation_windows(reservation: int, tmp: Path, path: Path) -> None:
+    """The reservation commit of :func:`_commit_without_clobber`, for Windows.
+
+    Same guarantee and same one-syscall window as the POSIX version. The reservation is closed
+    first because Windows refuses to rename over a file that is open, and its identity is taken
+    beforehand so that a failed rename still removes only the file this call reserved.
+    """
+    try:
+        reserved = os.fstat(reservation)
+    finally:
+        os.close(reservation)
+    try:
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            if os.path.samestat(reserved, os.lstat(path)):
+                os.unlink(path)
+        except OSError:
+            pass
+        raise
+
+
+# How long the Windows cleanup keeps trying while another process holds the staging file open. A
+# virus scanner or the search indexer opens a freshly written file for a moment, and Windows will
+# not delete a file while an open handle lacks delete sharing. A second in all, then it gives up.
+_DISCARD_ATTEMPTS = 20
+_DISCARD_PAUSE = 0.05
+
+
+def _discard_staging(tmp: Path) -> None:
+    """Remove the staging file. On POSIX this is one unlink.
+
+    On Windows, a refusal is retried for a short while (see :data:`_DISCARD_ATTEMPTS`). If the file
+    is still held when that runs out, it is left behind rather than raising. This runs while another
+    exception is already propagating or the output is already committed, and either of those
+    matters more to the caller than a leftover ``.firmauy-*.part``.
+    """
+    if not _platform.WINDOWS:
+        tmp.unlink(missing_ok=True)
+        return
+    for attempt in range(_DISCARD_ATTEMPTS):
+        try:
+            tmp.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if attempt + 1 < _DISCARD_ATTEMPTS:
+                time.sleep(_DISCARD_PAUSE)
+
+
+@contextmanager
+def _staged_output_windows(path: Path, *, overwrite: bool):
+    """The Windows branch of :func:`_staged_output`. Same contract, less to keep.
+
+    Windows will not rename, link or delete a file that this process still has open, so the staging
+    descriptor is closed before the commit and before any cleanup. Nothing after that needs it.
+
+    **Kept.** Atomic: the commit is still a single ``os.replace``, or an ``os.link`` that takes the
+    name or fails, so a crash or an exception never leaves a truncated file at ``path``. The bytes
+    are fsynced before that. Not through a symlink: ``os.replace`` replaces a link at ``path``
+    rather than writing through it, and ``os.link`` refuses a taken name. No clobber unless asked,
+    with the same fallback on FAT32 and exFAT, which have no hard links on Windows either. Byte-exact:
+    the staging file is opened with ``O_BINARY``. On failure no ``.firmauy-*.part`` is left behind,
+    unless another program holds it open for longer than :func:`_discard_staging` waits.
+
+    **Given up.** No POSIX access control. The output inherits its folder's NTFS ACL, like any new
+    file there, and nothing is carried over from a file it replaces: Windows has no POSIX owner,
+    group, mode or access ACL to carry, so no :class:`OutputAccessControlError` or
+    :class:`OutputCommittedError` comes from here. No 0600 window: while it is being written the
+    staging file is exactly as private as the folder it sits in, which is the folder the output
+    goes to. No final mode is set, because the only mode bit Windows has is read-only, and setting
+    that is not what the POSIX mode stood for.
+
+    A file being replaced is still looked at first, by :func:`_capture_replaced_windows`, so a link
+    or anything that is not a regular file is never taken for the file being replaced.
+    """
+    fd, tmp = _open_staging(path)
+    try:
+        try:
+            with os.fdopen(fd, "wb", closefd=False) as out:
+                yield out
+                out.flush()
+                os.fsync(fd)
+        finally:
+            os.close(fd)
+
+        if overwrite:
+            _adopt_replaced(None, path)
+            os.replace(tmp, path)
+        else:
+            _commit_without_clobber(tmp, path)
+    except BaseException:
+        _discard_staging(tmp)
+        raise
 
 
 @contextmanager
@@ -1013,7 +1203,15 @@ def _staged_output(path: Path, *, overwrite: bool = True):
     Yields the open file rather than a raw descriptor, and owns closing it. Handing back a
     descriptor made every caller responsible for a close they could skip by raising first, which
     leaked it onto a file already unlinked.
+
+    Windows takes :func:`_staged_output_windows`, which says what it keeps of the above and what it
+    gives up. Everything else takes this path.
     """
+    if _platform.WINDOWS:
+        with _staged_output_windows(path, overwrite=overwrite) as out:
+            yield out
+        return
+
     fd, tmp = _open_staging(path)
     try:
         # What an ordinary create would have produced, captured before narrowing, so a new file
@@ -1137,6 +1335,11 @@ def _open_input(path: Path, listed_identity: Optional[tuple[int, int]] = None):
     blocking on a FIFO, and refused unless it is still the regular file that was listed. Comparing
     the identity also catches a directory on the way swapped for a link, which ``O_NOFOLLOW``
     alone does not see.
+
+    Windows has no ``O_NOFOLLOW`` (and no FIFOs), so there a final link is recognised beforehand
+    by its reparse-point attribute, and a link swapped in after that check is followed by the open
+    but then fails the identity comparison, which is the same one, since ``st_ino`` is the NTFS file
+    ID.
     """
     if listed_identity is None:
         return path.open("rb")
@@ -1146,8 +1349,16 @@ def _open_input(path: Path, listed_identity: Optional[tuple[int, int]] = None):
             f"{path} changed after --input-dir was listed, so it was not signed: the file there "
             "now is not the one the listing checked.")
 
+    if _platform.WINDOWS:
+        try:
+            entry = os.lstat(path)
+        except FileNotFoundError as exc:
+            raise changed() from exc
+        if _is_reparse_point(entry) or not stat.S_ISREG(entry.st_mode):
+            raise changed()
+
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)
+        fd = os.open(path, _O_READ_NOFOLLOW)
     except OSError as exc:
         if exc.errno in _NOT_ADOPTABLE or exc.errno == errno.ENOENT:
             raise changed() from exc

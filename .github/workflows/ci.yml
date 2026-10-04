@@ -49,6 +49,32 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
+  # Windows: the oldest and newest supported Python, not the whole matrix. What differs there is the
+  # staging and commit of signed output, the doctor and the platform defaults, none of which depend
+  # on the Python version. No SoftHSM or OpenSC, so the PKCS#11 integration tests skip, as they do
+  # on any machine without them.
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      # pyscard publishes Windows wheels up to CPython 3.13, so on 3.14 uv builds it from source,
+      # which needs swig. MSVC and the Windows SDK (winscard) are already on the runner.
+      - name: Install swig
+        if: matrix.python-version == '3.14'
+        run: choco install swig --no-progress -y
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Run tests
+        run: uv run pytest
+
   # The two searching checks, both on every pull request and every push to main. The exhaustive
   # TSTInfo sweep is half a minute of work that found two escapes which had survived three
   # reviews and 385 deterministic tests, so leaving it archived was never defensible. The deep

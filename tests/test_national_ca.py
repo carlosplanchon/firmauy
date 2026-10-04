@@ -251,7 +251,7 @@ def test_fetch_cas_from_files_uses_supplied_certs_without_network(tmp_path, monk
     assert national_ca._fingerprint(cached_mica) == national_ca._fingerprint(intermediate)
 
 
-def test_atomic_cache_write_replaces_symlink_not_target(tmp_path):
+def test_atomic_cache_write_replaces_symlink_not_target(tmp_path, symlinks):
     target = tmp_path / "target"
     target.write_bytes(b"unchanged")
     destination = tmp_path / "acrn.pem"

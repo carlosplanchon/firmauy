@@ -20,6 +20,7 @@ from firmauy.card_reader import (
     card_to_json_obj,
     format_card_human,
     list_readers,
+    no_readers_message,
     photo_to_json_obj,
     read_card,
     read_photo,
@@ -2567,7 +2568,7 @@ def list_readers_cmd(
             return
         if not available:
             typer.secho(
-                "No PC/SC readers found. Is pcscd running and a reader connected?",
+                no_readers_message(),
                 fg=typer.colors.YELLOW,
                 err=True,
             )

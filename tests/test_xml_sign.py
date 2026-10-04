@@ -12,7 +12,7 @@ def test_external_entity_is_not_resolved_when_signing(tmp_path, cert_valid):
     payload = tmp_path / "secret.txt"
     payload.write_text("TOPSECRET")
     xml = (
-        f"<!DOCTYPE root [<!ENTITY xxe SYSTEM 'file://{payload}'>]>"
+        f"<!DOCTYPE root [<!ENTITY xxe SYSTEM '{payload.as_uri()}'>]>"
         "<root>&xxe;</root>"
     ).encode()
 

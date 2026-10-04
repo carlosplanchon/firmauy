@@ -458,6 +458,11 @@ for check in report.checks:
 `native=True` (default) checks the PC/SC reader and card that native signing uses. Set it False to
 check the PKCS#11 middleware module at `pkcs11_lib` instead.
 
+> **Changed in 1.21.0:** on Windows the `pcscd running` check is replaced by
+> `Smart Card service available`, which passes when PC/SC can list readers. A stopped service is
+> not a finding: Windows starts it when a reader is plugged in. No check suggests a Linux command
+> there, and a 32-bit `gclib.dll` on a 64-bit Python is named as such. Linux checks are unchanged.
+
 Returns a `DoctorReport(ok, checks)`, where each check is a
 `DoctorCheck(status, name, detail, fix, sensitive)`.
 

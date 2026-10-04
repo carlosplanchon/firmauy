@@ -209,6 +209,9 @@ def test_a_redirect_is_refused_and_the_headers_never_arrive():
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
+            # Read the body before answering. Closing a socket with unread data resets the
+            # connection on Windows, and the client then sees the reset instead of the reply.
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
             if self.path == "/secure":
                 self.send_response(302)
                 self.send_header("Location", "/plain")
@@ -337,6 +340,7 @@ def test_oversized_tsa_response_is_rejected_before_asn1_parsing():
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_POST(self):
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
             self.send_response(200)
             self.send_header("Content-Type", "application/timestamp-reply")
             self.send_header(

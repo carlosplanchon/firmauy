@@ -57,6 +57,24 @@ _ISSUER = [
 
 
 @pytest.fixture(scope="session")
+def _can_symlink(tmp_path_factory) -> bool:
+    probe = tmp_path_factory.mktemp("symlink-probe")
+    try:
+        (probe / "link").symlink_to(probe / "target")
+    except OSError:
+        return False
+    return True
+
+
+@pytest.fixture
+def symlinks(_can_symlink) -> None:
+    """Skip unless this account can create symbolic links. Windows only allows that to an
+    administrator or with Developer Mode on (WinError 1314 otherwise); CI runners have it."""
+    if not _can_symlink:
+        pytest.skip("this account cannot create symbolic links")
+
+
+@pytest.fixture(scope="session")
 def cert_valid() -> x509.Certificate:
     future = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365)
     return _build_cert(_SUBJECT, _ISSUER, future)

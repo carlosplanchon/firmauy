@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.11"
 # dependencies = ["openpyxl>=3.1"]
 # ///
 # Copyright 2026 Carlos Andrés Planchón Prestes

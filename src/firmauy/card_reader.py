@@ -18,6 +18,7 @@ import base64
 import hashlib
 from typing import Optional
 
+from firmauy import _platform
 from firmauy.ci import validate_ci
 from firmauy.errors import CardNotFoundError, ReaderNotFoundError
 
@@ -310,6 +311,12 @@ def list_readers() -> list:
     try:
         from smartcard.System import readers as _readers
     except ImportError as exc:
+        if _platform.WINDOWS:
+            # pyscard ships Windows wheels and PC/SC is part of Windows, so this is a broken
+            # install rather than a missing system package.
+            raise RuntimeError(
+                "PC/SC reader support (pyscard) could not be loaded. Reinstall firmauy."
+            ) from exc
         raise RuntimeError(
             "PC/SC reader support could not be loaded. Install the smart-card stack and start "
             "pcscd (Arch: sudo pacman -S pcsclite ccid; sudo systemctl enable --now pcscd)."
@@ -319,10 +326,24 @@ def list_readers() -> list:
     except Exception as exc:
         # pyscard raises its own exception types (EstablishContextException etc.) when the PC/SC
         # daemon is unreachable. Surface the actionable fix, not a bare hresult code.
+        if _platform.WINDOWS:
+            # Windows' PC/SC is the Smart Card service (SCardSvr). It is started when a reader is
+            # plugged in, and until then establishing a context fails with SCARD_E_NO_SERVICE.
+            raise RuntimeError(
+                f"Could not reach the Smart Card service ({exc}). Connect the reader; Windows "
+                "starts the Smart Card service (SCardSvr) on its own."
+            ) from exc
         raise RuntimeError(
             f"Could not reach the PC/SC daemon ({exc}). Is pcscd running? "
             "(Arch: sudo systemctl enable --now pcscd)"
         ) from exc
+
+
+def no_readers_message() -> str:
+    """What to say when PC/SC answers but lists no reader. Windows has no pcscd to ask about."""
+    if _platform.WINDOWS:
+        return "No PC/SC readers found. Is a reader connected?"
+    return "No PC/SC readers found. Is pcscd running and a reader connected?"
 
 
 def open_reader(reader_name: Optional[str] = None):
@@ -333,9 +354,7 @@ def open_reader(reader_name: Optional[str] = None):
     """
     available = list_readers()
     if not available:
-        raise ReaderNotFoundError(
-            "No PC/SC readers found. Is pcscd running and a reader connected?"
-        )
+        raise ReaderNotFoundError(no_readers_message())
     if reader_name is not None:
         matches = [r for r in available if str(r) == reader_name]
         if not matches:

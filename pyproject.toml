@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "firmauy"
-version = "1.20.0"
+version = "1.21.0"
 authors = [
   { name = "Carlos A. Planchón", email = "carlosplanchon@cognitialabs.com" }
 ]
 description = "Sign and verify PDF (PAdES), XML (XAdES) and arbitrary files (CAdES/.p7s) with a Uruguayan national ID card (cédula) via PKCS#11. Standards-based; not affiliated with AGESIC."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
@@ -18,7 +18,6 @@ license-files = ["LICENSE", "NOTICE"]
 keywords = ["pdf", "xml", "xades", "pades", "cades", "cms", "p7s", "pkcs11", "uruguay", "agesic", "cedula", "signature", "electronic"]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -26,6 +25,7 @@ classifiers = [
     "Topic :: Security :: Cryptography",
     "Environment :: Console",
     "Operating System :: POSIX :: Linux",
+    "Operating System :: Microsoft :: Windows",
 ]
 dependencies = [
     "asn1crypto>=1.5.1",

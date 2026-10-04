@@ -3,7 +3,9 @@
 import datetime
 import json
 import re
+import sys
 from importlib.metadata import version
+from pathlib import Path
 
 from unittest import mock
 
@@ -38,6 +40,11 @@ import firmauy.signing as signing
 from firmauy.errors import PinLastTryError, PinLockedError
 
 runner = CliRunner()
+
+# POSIX permissions, ownership, ACLs and FIFOs. Windows has none of them, and the Windows staging
+# path deliberately carries none across (see signing._staged_output_windows).
+posix_only = pytest.mark.skipif(sys.platform == "win32",
+                                reason="POSIX access control; Windows has none to test")
 
 
 # --- --version --------------------------------------------------------------
@@ -521,7 +528,7 @@ def test_batch_output_preserves_subdirs_and_avoids_collisions(tmp_path):
     assert o1 != o2
 
 
-def test_batch_input_rejects_symlinks_outside_input_dir(tmp_path):
+def test_batch_input_rejects_symlinks_outside_input_dir(tmp_path, symlinks):
     from firmauy.cli import _batch_input_allowed
 
     input_dir = tmp_path / "in"
@@ -583,7 +590,7 @@ def test_atomic_write_bytes_writes_and_cleans_up_temp(tmp_path):
     assert list(tmp_path.iterdir()) == [out]        # the staging file is gone after os.replace
 
 
-def test_atomic_write_bytes_replaces_symlink_without_writing_through(tmp_path):
+def test_atomic_write_bytes_replaces_symlink_without_writing_through(tmp_path, symlinks):
     # The XML/CMS signed outputs go through _atomic_write_bytes, which must REPLACE a pre-existing
     # output symlink with the real file -- not follow it and clobber its target (what write_bytes did).
     from firmauy.signing import _atomic_write_bytes
@@ -888,7 +895,7 @@ def test_sign_pdf_overwrite_failure_keeps_previous_output(tmp_path, monkeypatch)
     assert list(tmp_path.glob("*.part")) == []
 
 
-def test_sign_pdf_output_symlink_is_replaced_not_followed(tmp_path):
+def test_sign_pdf_output_symlink_is_replaced_not_followed(tmp_path, symlinks):
     # The atomic os.replace replaces an output symlink with the signed file instead of writing
     # through it. Pin that (safer) behavior: the symlink's previous target is left untouched,
     # so an attacker pre-creating the output as a symlink cannot redirect the write.
@@ -1383,7 +1390,7 @@ def test_sign_batch_mixed_folder_one_session(monkeypatch, tmp_path):
     assert by_kind["cms"].name == "c.zip.p7s" and by_kind["cms"].parent == out
 
 
-def test_sign_batch_skips_a_planted_symlink_and_says_so(monkeypatch, tmp_path):
+def test_sign_batch_skips_a_planted_symlink_and_says_so(monkeypatch, tmp_path, symlinks):
     """A link planted in the folder used to get its target signed, whatever file on the disk it
     pointed at. Skipped now, and named, because a batch that drops a file without a word looks
     like one that lost it. Passed as an argument, the same file is signed: that is the way to do
@@ -1724,7 +1731,7 @@ def test_the_staging_file_is_not_a_predictable_name(tmp_path):
     assert out.read_bytes() == b"%PDF-1.7\n"
 
 
-def test_a_symlink_planted_at_the_staging_path_cannot_capture_the_output(tmp_path):
+def test_a_symlink_planted_at_the_staging_path_cannot_capture_the_output(tmp_path, symlinks):
     """The attack the predictable name allowed, run against the current code.
 
     The staging name is unpredictable now, so this plants a symlink at every name the old scheme
@@ -1756,6 +1763,7 @@ def test_a_failed_write_leaves_nothing_behind(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+@posix_only
 def test_the_staging_file_does_not_decide_the_output_permissions(tmp_path):
     """mkstemp creates at 0600 and os.replace keeps it, so without a deliberate chmod every
     signed document would silently come out private. Making the staging name unpredictable was
@@ -1775,6 +1783,7 @@ def test_the_staging_file_does_not_decide_the_output_permissions(tmp_path):
         os.umask(previous)
 
 
+@posix_only
 def test_overwriting_keeps_the_mode_the_file_already_had(tmp_path):
     """Somebody who ran chmod 664 on their output meant it, and signing over it is not the moment
     to overrule them."""
@@ -1807,6 +1816,7 @@ def test_the_staged_handle_is_closed_even_when_the_caller_raises(tmp_path):
     assert handle is not None and handle.closed
 
 
+@posix_only
 def test_a_symlinked_output_does_not_donate_its_targets_permissions(tmp_path):
     """os.replace keeps the bytes safe and preservation was reading the mode with stat(), which
     follows the link. A symlink planted at the output, pointed at anything world-writable, then
@@ -1834,6 +1844,7 @@ def test_a_symlinked_output_does_not_donate_its_targets_permissions(tmp_path):
         os.umask(previous)
 
 
+@posix_only
 def test_setuid_is_not_inherited_by_a_freshly_signed_document(tmp_path):
     """Preserving the mode of the file being replaced is about honouring a chmod 664, not about
     carrying every bit across. A setuid bit on a signed document is not something anybody meant
@@ -1864,6 +1875,7 @@ def test_a_long_output_name_is_still_signable(tmp_path):
     assert out.read_bytes() == b"<signed/>"
 
 
+@posix_only
 def test_the_staging_file_is_private_while_it_holds_the_document(tmp_path):
     """An unpredictable name stops somebody planting a file there and says nothing about somebody
     watching the directory and reading one. The staging file used to sit at 0644 for the whole
@@ -1922,7 +1934,7 @@ def test_with_overwrite_replacing_still_works(tmp_path):
     assert out.read_bytes() == b"<new/>"
 
 
-def test_a_dangling_symlink_counts_as_occupied(tmp_path):
+def test_a_dangling_symlink_counts_as_occupied(tmp_path, symlinks):
     """`Path.exists()` reports a broken link as absent, so the early check waves it through.
     os.link does not, which is the second reason the guarantee belongs at the commit."""
     from firmauy.errors import OutputExistsError
@@ -1937,9 +1949,12 @@ def test_a_dangling_symlink_counts_as_occupied(tmp_path):
 
 
 def _no_hard_links(src, dst, *args, **kwargs):
-    """What link(2) answers on FAT32 and exFAT, which keep no link count at all."""
+    """What link(2) answers on FAT32 and exFAT, which keep no link count at all. On Windows,
+    CreateHardLinkW answers ERROR_INVALID_FUNCTION there instead."""
     import errno
 
+    if sys.platform == "win32":
+        raise OSError(errno.EINVAL, "Incorrect function", str(src), 1, str(dst))
     raise PermissionError(errno.EPERM, "Operation not permitted", str(src), None, str(dst))
 
 
@@ -2025,6 +2040,7 @@ def test_any_other_link_failure_is_not_taken_for_a_missing_feature(tmp_path, mon
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
 
 
+@posix_only
 def test_the_file_is_still_private_at_the_moment_it_is_committed(tmp_path):
     """The narrowing used to be undone before the commit, so the staging file sat at its final,
     possibly world-readable mode for the instant between. Small window, real one, and "private
@@ -2059,6 +2075,7 @@ def test_the_file_is_still_private_at_the_moment_it_is_committed(tmp_path):
     assert stat.S_IMODE((tmp_path / "a.xml").stat().st_mode) == 0o644
 
 
+@posix_only
 def test_the_group_of_the_replaced_file_survives(tmp_path):
     """An atomic replace swaps an inode, so the group goes with it unless it is put back. The mode
     then reads 0640 before and after while a different set of people can open the document."""
@@ -2159,6 +2176,7 @@ def _fails_to_preserve(monkeypatch, name, exc):
     monkeypatch.setattr(os, name, mock.Mock(side_effect=exc))
 
 
+@posix_only
 def test_a_group_that_cannot_be_restored_stops_the_write(tmp_path, monkeypatch):
     """A file whose group the process cannot set: without this, its 0640 was reapplied to the
     process's own group and a different set of people could read the signed document."""
@@ -2179,6 +2197,7 @@ def test_a_group_that_cannot_be_restored_stops_the_write(tmp_path, monkeypatch):
     assert not [p for p in tmp_path.iterdir() if p.name.startswith(".firmauy-")]
 
 
+@posix_only
 def test_an_acl_that_cannot_be_restored_stops_the_write(tmp_path, monkeypatch):
     from firmauy.errors import OutputAccessControlError
     from firmauy.signing import _atomic_write_bytes
@@ -2193,6 +2212,7 @@ def test_an_acl_that_cannot_be_restored_stops_the_write(tmp_path, monkeypatch):
     assert out.read_bytes() == b"ORIGINAL"
 
 
+@posix_only
 def test_an_unreadable_acl_stops_the_write(tmp_path, monkeypatch):
     """Guessing "absent" would restore absence onto a file that may have had one, which is a
     decision about who may read a document, not a detail to paper over."""
@@ -2209,6 +2229,7 @@ def test_an_unreadable_acl_stops_the_write(tmp_path, monkeypatch):
     assert out.read_bytes() == b"ORIGINAL"
 
 
+@posix_only
 def test_a_filesystem_without_acls_is_not_an_error(tmp_path, monkeypatch):
     """ENOTSUP is the platform saying it has no ACLs, which means none could have been inherited
     either. That is nothing to restore, not a failure."""
@@ -2239,6 +2260,7 @@ def test_the_owner_is_carried_across_too(tmp_path):
     assert _capture_replaced(out).uid == out.stat().st_uid
 
 
+@posix_only
 def test_the_permissions_come_from_the_file_actually_being_replaced(tmp_path):
     """Signing takes seconds: a card, a PIN, sometimes a TSA. A capture taken before all that
     describes a file that may since have been replaced by a more private one, and reapplying the
@@ -2265,6 +2287,7 @@ def test_the_permissions_come_from_the_file_actually_being_replaced(tmp_path):
         os.umask(previous)
 
 
+@posix_only
 def test_a_file_that_appears_mid_signing_still_decides_the_permissions(tmp_path):
     """The same race from the other end: nothing to replace when the signature starts, so the
     umask would have decided, and something private to replace by the time it finishes."""
@@ -2287,6 +2310,7 @@ def test_a_file_that_appears_mid_signing_still_decides_the_permissions(tmp_path)
         os.umask(previous)
 
 
+@posix_only
 def test_the_capture_describes_one_file_and_not_two(tmp_path, monkeypatch):
     """Mode, owner and group come from one syscall and the ACL from another, both by pathname,
     and a pathname is not a handle. If the entry is replaced between the two, the answer mixes a
@@ -2326,6 +2350,7 @@ def test_the_capture_describes_one_file_and_not_two(tmp_path, monkeypatch):
         os.umask(previous)
 
 
+@posix_only
 def test_the_same_file_made_private_mid_read_is_also_caught(tmp_path, monkeypatch):
     """Not every mid-read change swaps the inode. A plain chmod leaves device and inode alone and
     still makes the mode read a moment earlier wrong, which is why ctime is part of the check."""
@@ -2360,6 +2385,7 @@ def test_the_same_file_made_private_mid_read_is_also_caught(tmp_path, monkeypatc
         os.umask(previous)
 
 
+@posix_only
 def test_a_path_that_never_holds_still_publishes_nothing(tmp_path, monkeypatch):
     """Starting over is bounded. Against something rewriting the path without pause the answer is
     to refuse, not to publish permissions belonging to a file that is no longer there."""
@@ -2553,6 +2579,7 @@ def test_an_entry_that_leaves_and_returns_mid_read_cannot_mix_two_files(tmp_path
     assert stat.S_IMODE(out.stat().st_mode) == 0o640
 
 
+@posix_only
 def test_a_replacement_is_caught_with_the_clock_stopped_too(tmp_path):
     """The plain swap, where the intruder stays. Device and inode settle it, so this holds on a
     filesystem whose timestamps say nothing."""
@@ -2622,6 +2649,7 @@ def test_an_output_its_owner_cannot_read_is_refused_rather_than_guessed(tmp_path
     assert out.read_bytes() == b"SECRET", "the unreadable file was replaced anyway"
 
 
+@posix_only
 def test_a_symlink_at_the_output_does_not_lend_its_target_access_control(tmp_path):
     """The write already refuses to go through a symlink planted at the output. So must the read:
     following one would take the mode and ACL of whatever it points at, a file nobody asked to
@@ -2661,6 +2689,7 @@ def test_a_symlink_at_the_output_does_not_lend_its_target_access_control(tmp_pat
     assert _acl_of(out) is None, "it took the symlink target's ACL"
 
 
+@posix_only
 def test_a_fifo_at_the_output_does_not_hang_the_signature(tmp_path):
     """Opening a FIFO for reading waits for a writer, and nobody is coming. Without O_NONBLOCK the
     signature stops there forever, after the card and the PIN and the TSA, with the document
@@ -2746,6 +2775,7 @@ def test_an_unexpected_failure_reading_the_output_stays_a_typed_error(tmp_path, 
     assert not list(tmp_path.glob(".firmauy-*.part")), "a staging file was left behind"
 
 
+@posix_only
 def test_a_failure_after_the_commit_is_a_typed_committed_error(tmp_path):
     """The one failure in this function that raises with the output already written. Every other
     one leaves nothing behind, so a caller that treats an exception as "no output" is right except
@@ -3192,7 +3222,7 @@ def test_sign_batch_json_reports_each_file(monkeypatch, tmp_path):
     assert r.exit_code == 1
     out = json.loads(r.stdout)
     assert (out["ok"], out["signed"], out["errors"], out["total"]) == (False, 2, 1, 3)
-    files = {f["input"].rsplit("/", 1)[-1]: f for f in out["files"]}
+    files = {Path(f["input"]).name: f for f in out["files"]}
     assert files["a.pdf"]["status"] == "ok" and files["a.pdf"]["kind"] == "pades"
     assert files["c.zip"]["status"] == "ok" and files["c.zip"]["kind"] == "cades"
     assert files["b.xml"]["status"] == "error"
@@ -3314,7 +3344,7 @@ def test_dry_run_json_lists_what_would_be_signed(monkeypatch, tmp_path):
     assert r.exit_code == 0, r.output
     payload = json.loads(r.stdout)
     assert (payload["ok"], payload["dry_run"], payload["total"]) == (True, True, 2)
-    assert [(f["kind"], f["status"], f["output"].rsplit("/", 1)[-1]) for f in payload["files"]] == [
+    assert [(f["kind"], f["status"], Path(f["output"]).name) for f in payload["files"]] == [
         ("pades", "would_sign", "a_firmado.pdf"), ("xades", "would_sign", "b_firmado.xml")]
     assert not out.exists(), "a dry run created the output directory"
 

@@ -30,7 +30,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
       # libpcsclite-dev + swig are build deps for pyscard (a C extension); without the pcsclite
@@ -40,6 +40,32 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libpcsclite-dev swig softhsm2 opensc
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: uv sync --group dev
+      - name: Run tests
+        run: uv run pytest
+
+  # Windows: the oldest and newest supported Python, not the whole matrix. What differs there is the
+  # staging and commit of signed output, the doctor and the platform defaults, none of which depend
+  # on the Python version. No SoftHSM or OpenSC, so the PKCS#11 integration tests skip, as they do
+  # on any machine without them.
+  test-windows:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+      # pyscard publishes Windows wheels up to CPython 3.13, so on 3.14 uv builds it from source,
+      # which needs swig. MSVC and the Windows SDK (winscard) are already on the runner.
+      - name: Install swig
+        if: matrix.python-version == '3.14'
+        run: choco install swig --no-progress -y
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
@@ -72,7 +98,7 @@ jobs:
       - name: Run the sweep
         run: FIRMAUY_SWEEP=1 uv run pytest tests/test_sweep_tstinfo.py -q
       # The deep property profile belongs here rather than in `test`, which already runs the
-      # shallow one across five Python versions. Rare counterexamples do not care which
+      # shallow one across four Python versions. Rare counterexamples do not care which
       # interpreter finds them, and this way the matrix stays fast.
       - name: Run the deep property profile
         run: FIRMAUY_DEEP=1 uv run pytest tests/test_properties_timestamp.py -q

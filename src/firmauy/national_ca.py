@@ -33,6 +33,8 @@ from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.primitives.serialization import Encoding
 
+from firmauy import _platform
+
 # Called with a human-readable status line while fetching (retry / source fallback).
 Progress = Callable[[str], None]
 
@@ -57,7 +59,12 @@ _USER_AGENT = "firmauy (+https://pypi.org/project/firmauy)"
 
 
 def cache_dir() -> Path:
-    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    """Where the fetched national CA certificates are kept. ``%LOCALAPPDATA%`` on Windows, which
+    is the per-user, per-machine place Windows has for caches. The XDG cache directory elsewhere."""
+    if _platform.WINDOWS:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
     return Path(base) / "firmauy" / "national-ca"
 
 
@@ -73,11 +80,17 @@ def _fingerprint(cert: x509.Certificate) -> str:
 
 
 def _atomic_cache_write(path: Path, data: bytes) -> None:
-    """Write a cache file privately, then replace the destination without following a symlink."""
+    """Write a cache file privately, then replace the destination without following a symlink.
+
+    On Windows there is no mode to narrow: the file is as private as ``%LOCALAPPDATA%``, which is
+    the user's own. The descriptor is closed before ``os.replace``, which Windows needs, and which
+    the ``with`` already does everywhere.
+    """
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     temporary_path = Path(temporary)
     try:
-        os.fchmod(fd, 0o600)
+        if not _platform.WINDOWS:
+            os.fchmod(fd, 0o600)
         with os.fdopen(fd, "wb") as output:
             output.write(data)
             output.flush()

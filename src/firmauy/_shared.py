@@ -12,11 +12,13 @@ module. The CLI imports them back from here, so there is a single source of trut
 from __future__ import annotations
 
 import shutil
+import sys
 from pathlib import Path
 from typing import Callable, Optional
 
 from cryptography import x509
 
+from firmauy import _platform
 from firmauy.national_ca import load_bundled_trust_anchors, load_cached_trust_anchors
 from firmauy.pkcs11_utils import load_pkcs11_lib
 
@@ -149,6 +151,45 @@ def _detached_original(p7s_path: Path) -> Optional[Path]:
 
 _PCSCD_SOCKETS = ("/run/pcscd/pcscd.comm", "/var/run/pcscd/pcscd.comm")
 
+# PE machine type of a 32-bit x86 image, from the COFF header.
+_PE_MACHINE_I386 = 0x014C
+
+
+def _pe_is_32bit(path: str) -> Optional[bool]:
+    """Whether the Windows module at ``path`` is 32-bit x86, read off its PE header. None when the
+    file cannot be read or is not a PE image, so the caller falls back to what the path says."""
+    try:
+        with open(path, "rb") as f:
+            dos = f.read(0x40)
+            if len(dos) < 0x40 or dos[:2] != b"MZ":
+                return None
+            f.seek(int.from_bytes(dos[0x3C:0x40], "little"))
+            pe = f.read(6)
+    except OSError:
+        return None
+    if len(pe) < 6 or pe[:4] != b"PE\0\0":
+        return None
+    return int.from_bytes(pe[4:6], "little") == _PE_MACHINE_I386
+
+
+def _wrong_bitness_fix(pkcs11_lib: str) -> Optional[str]:
+    """On a 64-bit Python, the fix for pointing at the 32-bit gclib.dll; None otherwise.
+
+    Thales Classic Client installs both, and the 32-bit one fails to load with only "%1 is not a
+    valid Win32 application", which says nothing about which file to use instead. The PE header
+    decides when the file is there, and the "Program Files (x86)" folder when it is not.
+    """
+    if sys.maxsize <= 2**32:
+        return None
+    is_32bit = _pe_is_32bit(pkcs11_lib) if Path(pkcs11_lib).exists() else None
+    if is_32bit is None:
+        is_32bit = "program files (x86)" in pkcs11_lib.lower()
+    if not is_32bit:
+        return None
+    from firmauy.constants import DEFAULT_PKCS11_LIB
+    return (f"A 64-bit Python cannot load the 32-bit gclib.dll. Use the 64-bit one: "
+            f"{DEFAULT_PKCS11_LIB}")
+
 
 def _doctor_pkcs11(add, pkcs11_lib: str) -> None:
     """PKCS#11-backend checks: the middleware module and the token it exposes."""
@@ -159,8 +200,14 @@ def _doctor_pkcs11(add, pkcs11_lib: str) -> None:
             lib = load_pkcs11_lib(pkcs11_lib)
             add("PASS", "PKCS#11 module loads")
         except Exception as exc:
-            add("FAIL", "PKCS#11 module loads", _format_error(exc),
-                fix="The module is present but could not be initialised; check the middleware install.")
+            fix = "The module is present but could not be initialised; check the middleware install."
+            if _platform.WINDOWS:
+                fix = _wrong_bitness_fix(pkcs11_lib) or fix
+            add("FAIL", "PKCS#11 module loads", _format_error(exc), fix=fix)
+    elif _platform.WINDOWS:
+        add("FAIL", "PKCS#11 module present", f"not found: {pkcs11_lib}",
+            fix=_wrong_bitness_fix(pkcs11_lib)
+            or "Install Thales Classic Client (the cédula middleware), or pass --pkcs11-lib.")
     else:
         add("FAIL", "PKCS#11 module present", f"not found: {pkcs11_lib}",
             fix="Install the middleware (Arch: yay -S cedula-uruguay-pkcs11), or pass --pkcs11-lib.")
@@ -180,7 +227,32 @@ def _doctor_pkcs11(add, pkcs11_lib: str) -> None:
         add("PASS", "cédula token detected", f"{label}{extra}", sensitive=True)
     else:
         add("WARN", "cédula token detected", "no card found",
-            fix="Insert the cédula and check the reader connection / pcscd.")
+            fix="Insert the cédula and check the reader connection / Smart Card service."
+            if _platform.WINDOWS else "Insert the cédula and check the reader connection / pcscd.")
+
+
+_SCARDSVR_FIX = ("Connect the reader; Windows starts the Smart Card service (SCardSvr) on its "
+                 "own.")
+
+
+def _doctor_smart_card_service(add) -> None:
+    """The Windows counterpart of the pcscd check: can PC/SC be reached at all?
+
+    Windows' PC/SC is the Smart Card service (SCardSvr), and it is trigger-started: stopped is its
+    normal state until a reader is plugged in, so a stopped service is not a finding. Its state is
+    therefore not what is asked. What is asked is whether listing readers works, through pyscard,
+    which is what both backends then depend on. With no reader ever connected that fails with
+    SCARD_E_NO_SERVICE, and the fix is the same one: connect the reader.
+    """
+    from firmauy.card_reader import list_readers
+
+    try:
+        list_readers()
+    except Exception as exc:
+        add("WARN", "Smart Card service available", _format_error(exc.__cause__ or exc),
+            fix=_SCARDSVR_FIX)
+    else:
+        add("PASS", "Smart Card service available")
 
 
 def _doctor_native(add, reader: Optional[str]) -> None:
@@ -190,12 +262,18 @@ def _doctor_native(add, reader: Optional[str]) -> None:
     try:
         available = list_readers()
     except Exception as exc:
-        add("WARN", "PC/SC reader detected", _format_error(exc),
-            fix="Install the smart-card stack (sudo pacman -S pcsclite ccid) and start pcscd.")
+        if _platform.WINDOWS:
+            add("WARN", "PC/SC reader detected", _format_error(exc.__cause__ or exc),
+                fix=_SCARDSVR_FIX)
+        else:
+            add("WARN", "PC/SC reader detected", _format_error(exc),
+                fix="Install the smart-card stack (sudo pacman -S pcsclite ccid) and start pcscd.")
         return
     if not available:
         add("WARN", "PC/SC reader detected", "none found",
-            fix="Connect a reader and make sure pcscd is running.")
+            fix="Connect a reader and check that Windows lists it under \"Smart card readers\" "
+                "in Device Manager." if _platform.WINDOWS
+            else "Connect a reader and make sure pcscd is running.")
         return
     add("PASS", "PC/SC reader detected", ", ".join(str(r) for r in available))
 
@@ -250,8 +328,11 @@ def _collect_doctor_checks(native: bool, reader: Optional[str], pkcs11_lib: str)
         v = "unknown"
     add("PASS", "firmauy", f"{v} (Python {platform.python_version()})")
 
-    # pcscd is needed by both backends (the PKCS#11 middleware and native both talk via pcscd).
-    if any(Path(s).exists() for s in _PCSCD_SOCKETS):
+    # PC/SC is needed by both backends (the PKCS#11 middleware and native both talk through it).
+    # On Linux that is pcscd; on Windows the Smart Card service, a row of its own on purpose.
+    if _platform.WINDOWS:
+        _doctor_smart_card_service(add)
+    elif any(Path(s).exists() for s in _PCSCD_SOCKETS):
         add("PASS", "pcscd running")
     elif shutil.which("pcscd"):
         add("WARN", "pcscd running", "installed but not running",

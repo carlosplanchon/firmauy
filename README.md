@@ -81,11 +81,18 @@ This tool targets **Linux** and is primarily developed and tested on **Arch Linu
 
 Other Linux distributions may work if the required smart card stack, PKCS#11 middleware, and Python environment are correctly configured.
 
-**Windows and macOS are not currently supported or tested.**
+**Windows** (x64) is supported from 1.21.0: signing, `doctor` and the native PC/SC backend. There,
+PC/SC is the built-in Smart Card service, which Windows starts when a reader is plugged in, and the
+PKCS#11 middleware is Thales Classic Client: the default module is
+`C:\Program Files\Thales\Classic Client\BIN\gclib.dll`, the 64-bit one. The installer also puts a
+32-bit copy under `Program Files (x86)`, which a 64-bit Python cannot load. On Windows the signed
+file inherits its folder's permissions, and nothing is carried over from a file it replaces.
+
+**macOS is not currently supported or tested.**
 
 ### Python
 
-Python **3.10 or newer**.
+Python **3.11 or newer**.
 
 ### PKCS#11 middleware
 

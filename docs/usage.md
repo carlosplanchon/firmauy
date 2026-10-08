@@ -2,9 +2,14 @@
 
 Step-by-step usage for every `firmauy` command (the CLI is invoked as `firmauy`). For a one-line overview of all commands, see the [README](../README.md#commands). For task-oriented recipes, see the [cookbook](cookbook.md).
 
-> **New here?** Run `firmauy doctor` first. It checks your setup (PKCS#11 module, `pcscd`, card,
-> bundled CAs) and needs no PIN, so it is the fastest way to catch a problem before you try to sign.
+> **New here?** Run `firmauy doctor` first. It checks your setup (PKCS#11 module, the PC/SC service,
+> card, bundled CAs) and needs no PIN, so it is the fastest way to catch a problem before you try to sign.
 > See [Diagnose your setup (doctor)](#diagnose-your-setup-doctor).
+>
+> **On Windows (x64)**, supported from 1.21.0, the commands are the same. PC/SC is the built-in Smart
+> Card service (`doctor` checks that service instead of `pcscd`), and the PKCS#11 middleware is Thales
+> Classic Client, whose 64-bit module `C:\Program Files\Thales\Classic Client\BIN\gclib.dll` is the
+> default. The 32-bit copy under `Program Files (x86)` cannot be loaded by a 64-bit Python.
 
 ## Contents
 

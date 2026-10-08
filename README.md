@@ -26,11 +26,11 @@ Sign and verify PDF, XML and any file with your Uruguayan national ID card over 
 
 ## Quick start
 
-> Requires **Linux** with the Uruguayan cédula PKCS#11 middleware installed. The full smart-card setup is in [Requirements](#requirements) and [Setup on Arch Linux](#setup-on-arch-linux).
+> Requires **Linux or Windows (x64)**, a smart-card reader, and either the Uruguayan cédula PKCS#11 middleware or the native PC/SC backend (`--native`). The full smart-card setup is in [Requirements](#requirements), [Operating system](#operating-system) and [Setup on Arch Linux](#setup-on-arch-linux).
 
 ```bash
 uv tool install firmauy                # install
-firmauy doctor                         # check the setup (pcscd, PKCS#11 module, card, CAs)
+firmauy doctor                         # check the setup (PC/SC service, PKCS#11 module, card, CAs)
 firmauy list-tokens                    # confirm the card is detected
 firmauy sign-pdf input.pdf             # sign -> input_firmado.pdf (prompts for the PIN)
 firmauy verify input_firmado.pdf       # verify (auto-detects format; offline chain check)
@@ -77,7 +77,7 @@ Timestamping is **optional and bring-your-own**: it works with any external RFC 
 
 ### Operating system
 
-This tool targets **Linux** and is primarily developed and tested on **Arch Linux**.
+This tool targets **Linux** and, from 1.21.0, **Windows (x64)**. It is primarily developed and tested on **Arch Linux**.
 
 Other Linux distributions may work if the required smart card stack, PKCS#11 middleware, and Python environment are correctly configured.
 
@@ -101,7 +101,7 @@ Arch Linux by the `cedula-uruguay-pkcs11` AUR package. Install it as shown in
 [Setup on Arch Linux](#setup-on-arch-linux).
 
 > **Native mode (optional):** every signing command also accepts `--native`, which talks to the
-> cédula directly over PC/SC (pcscd and a reader) and needs **no PKCS#11 middleware** at all. It is
+> cédula directly over PC/SC (the PC/SC service and a reader) and needs **no PKCS#11 middleware** at all. It is
 > experimental and not officially certified, though its output is accepted by the AGESIC validator.
 > See [Native signing](docs/usage.md#native-signing-no-pkcs11-middleware) and the
 > [card protocol reference](docs/card-protocol.md). `firmauy doctor --native` diagnoses this
@@ -154,8 +154,9 @@ uv tool install firmauy      # recommended: isolated CLI on your PATH
 pip install firmauy          # or into the current Python environment
 ```
 
-Installing the package does **not** install the smart-card stack. You still need `pcscd`, a reader
-and the PKCS#11 middleware (or `--native`, which needs only `pcscd`). See
+Installing the package does **not** install the smart-card stack. You still need the PC/SC service
+(`pcscd` on Linux; built into Windows), a reader and the PKCS#11 middleware (or `--native`, which
+needs only PC/SC). See
 [Requirements](#requirements) and [Setup on Arch Linux](#setup-on-arch-linux), then run
 `firmauy doctor` to check everything is in place.
 
@@ -196,7 +197,7 @@ examples for every command are in the **[usage guide](docs/usage.md)**, and task
 
 | Command | Description |
 |---|---|
-| `doctor` | Diagnose the local environment (pcscd, PKCS#11 module, card, CAs). `--native` checks the PC/SC path native signing uses |
+| `doctor` | Diagnose the local environment (PC/SC service, PKCS#11 module, card, CAs). `--native` checks the PC/SC path native signing uses |
 | `fetch-cas` | Optional: re-fetch the currently pinned national CA certificates into a per-user cache. A rotated CA needs a new release, or `--ca-file` |
 
 ## Use as a library
@@ -294,7 +295,7 @@ Local, developer-oriented signing and verification using a Uruguayan ID card thr
 - sign PDFs (PAdES), XML documents (XAdES), and arbitrary files (CAdES/.p7s) locally
 - verify those signatures locally, including the certificate chain to the national root
 - understand and reproduce a PKCS#11-based signing workflow
-- experiment with smart card integration on Linux
+- experiment with smart card integration on Linux or Windows
 - build automation around signing and verification under their own responsibility
 
 It is **not** intended to replace official, certified, or legally guaranteed signing platforms.

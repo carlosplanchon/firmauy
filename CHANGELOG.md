@@ -4,6 +4,12 @@ User-facing strings are a public surface: firmauy-desktop translates them by the
 entry that adds, changes or removes one lists it verbatim, with `{placeholders}` where the text is
 filled in at run time.
 
+## 1.21.1
+
+Documentation only; no code changes. The README and the usage guide now say that firmauy runs on
+Linux or Windows (x64), which has been the case since 1.21.0, and name the Smart Card service where
+they used to assume `pcscd`. This release exists so that the PyPI page says the same.
+
 ## 1.21.0
 
 ### Python 3.10 is no longer supported

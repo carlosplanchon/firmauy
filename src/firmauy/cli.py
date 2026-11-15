@@ -2631,7 +2631,7 @@ def fetch_identity_cmd(
         else:
             typer.echo(format_card_human(card, redact=redact))
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 
@@ -2738,7 +2738,7 @@ def fetch_photo_cmd(
             out_path.write_bytes(photo)
             typer.secho(f"Photo saved: {out_path} ({len(photo)} bytes)", fg=typer.colors.GREEN)
     except Exception as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        _emit_error(exc, json_output)
         raise typer.Exit(code=1)
 
 

@@ -127,7 +127,10 @@ def read_file(conn, fid: int) -> list:
                 f"File {fid:04X} extends past offset 7FFF, beyond plain READ BINARY addressing."
             )
         chunk = min(size - offset, 0xF8)
-        data, sw1, sw2 = conn.transmit([0x00, 0xB0, offset >> 8, offset & 0xFF, chunk])
+        # transmit_collect, not raw transmit: a T=0 stack may answer READ BINARY with 61 xx and
+        # deliver the rest through GET RESPONSE. Reading only the first chunk silently truncated
+        # the file, and the follow-up GET RESPONSE was never sent.
+        data, sw1, sw2 = transmit_collect(conn, [0x00, 0xB0, offset >> 8, offset & 0xFF, chunk])
         check_sw(sw1, sw2, f"READ BINARY @{offset}")
         if not data:
             # Success status but no bytes: offset would not advance -> infinite loop. Bail out

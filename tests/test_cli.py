@@ -1137,7 +1137,11 @@ def test_fetch_photo_json_rejects_file_path(monkeypatch, capsys):
                             json_output=True, json_pretty=False, redact=False)
 
     assert opened["n"] == 0
-    assert "cannot be combined" in capsys.readouterr().err.lower()
+    # Under --json every failure is the documented error object on stdout, so a script never has
+    # to read stderr to learn what happened.
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "cannot be combined" in payload["error"].lower()
 
 
 def test_fetch_photo_json_rejects_explicit_default_path(monkeypatch, capsys):
@@ -1157,7 +1161,9 @@ def test_fetch_photo_json_rejects_explicit_default_path(monkeypatch, capsys):
                             json_output=True, json_pretty=False, redact=False)
 
     assert opened["n"] == 0
-    assert "cannot be combined" in capsys.readouterr().err.lower()
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert "cannot be combined" in payload["error"].lower()
 
 
 def test_fetch_photo_redact_without_json_is_refused(monkeypatch, capsys):

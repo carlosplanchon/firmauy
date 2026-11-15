@@ -70,6 +70,8 @@ instance/
 
 # Sphinx documentation
 docs/_build/
+# Zensical output (the GitHub Pages workflow builds it, it is not committed).
+site/
 
 # PyBuilder
 .pybuilder/

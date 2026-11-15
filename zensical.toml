@@ -1,0 +1,48 @@
+# Zensical configuration for the Spanish documentation, which is the default site.
+#
+# The English pages live in docs/ and are built separately with zensical.en.toml into site/en/.
+# GitHub Actions runs both builds and publishes the combined site. Spanish is the default so the
+# root URL, the navigation and the search index are Spanish.
+
+[project]
+site_name = "FirmaUY"
+site_description = "Firma y verifica PDF, XML y archivos con la cédula uruguaya. Documentación en español."
+site_author = "Carlos A. Planchón"
+site_url = "https://carlosplanchon.github.io/firmauy/"
+copyright = """
+Copyright &copy; 2026 Carlos A. Planchón. Publicado bajo la licencia Apache 2.0.
+"""
+docs_dir = "docs-es"
+site_dir = "site"
+
+nav = [
+  { "Inicio" = "index.md" },
+  { "Instalación y configuración" = "instalacion.md" },
+  { "Guía de uso" = "uso.md" },
+  { "Recetario" = "recetario.md" },
+  { "Seguridad y claves" = "seguridad.md" },
+  { "Referencia" = "referencia.md" },
+]
+
+[project.theme]
+language = "es"
+features = [
+  "content.code.copy",
+  "navigation.sections",
+  "navigation.top",
+  "search.highlight",
+]
+
+[project.validation]
+invalid_links = true
+invalid_link_anchors = true
+# The security invariants page cites Agesic clauses as [CA.4-6] labels. They are labels, not links.
+# Their definitions are escaped on that page; this keeps the remaining labels from being reported
+# as unresolved references, which is the documented way to keep intentional brackets.
+unresolved_references = false
+
+[project.extra]
+alternate = [
+  { name = "Español", link = "/", lang = "es" },
+  { name = "English", link = "/en/", lang = "en" },
+]

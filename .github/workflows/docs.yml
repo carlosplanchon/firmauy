@@ -1,0 +1,54 @@
+name: Documentation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Only one run per ref. A newer commit supersedes an older run on the same branch.
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      # Pin Zensical so a new release cannot change the generated site without a review.
+      - name: Install Zensical
+        run: pip install "zensical==0.0.45"
+      # Spanish is the default: it is built first into site/. English then adds site/en/ without
+      # cleaning the Spanish output.
+      - name: Build Spanish site
+        run: zensical build --clean
+      - name: Build English site
+        run: zensical build -f zensical.en.toml
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    # Pull requests build the site to validate it, but never deploy it.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Only a real deployment configures Pages. Doing this in a pull request fails because the
+      # token has no access to the Pages site, and the build itself does not need it.
+      - uses: actions/configure-pages@v6
+      - uses: actions/deploy-pages@v5
+        id: deployment

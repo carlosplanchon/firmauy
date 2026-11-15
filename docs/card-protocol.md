@@ -19,7 +19,7 @@ Sources:
 - <https://www.gub.uy/agencia-gobierno-electronico-sociedad-informacion-conocimiento/comunicacion/publicaciones/documentacion-tecnica-id-uruguay/documentacion-tecnica-id-uruguay-9>
 
 > This project is not affiliated with or endorsed by AGESIC, and the native backend is experimental
-> and not officially certified. See the [README](../README.md#legal-and-compliance).
+> and not officially certified. See the [README](https://github.com/carlosplanchon/firmauy/blob/main/README.md#legal-and-compliance).
 
 ## What the card is
 

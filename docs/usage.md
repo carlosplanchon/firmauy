@@ -1,6 +1,6 @@
 # FirmaUY usage guide
 
-Step-by-step usage for every `firmauy` command (the CLI is invoked as `firmauy`). For a one-line overview of all commands, see the [README](../README.md#commands). For task-oriented recipes, see the [cookbook](cookbook.md).
+Step-by-step usage for every `firmauy` command (the CLI is invoked as `firmauy`). For a one-line overview of all commands, see the [README](https://github.com/carlosplanchon/firmauy/blob/main/README.md#commands). For task-oriented recipes, see the [cookbook](cookbook.md).
 
 > **New here?** Run `firmauy doctor` first. It checks your setup (PKCS#11 module, the PC/SC service,
 > card, bundled CAs) and needs no PIN, so it is the fastest way to catch a problem before you try to sign.
@@ -24,13 +24,13 @@ Step-by-step usage for every `firmauy` command (the CLI is invoked as `firmauy`)
 - [Sign multiple PDFs (batch)](#sign-multiple-pdfs-batch)
 - [Sign an XML document (XAdES)](#sign-an-xml-document-xades)
 - [Sign multiple XML documents (batch)](#sign-multiple-xml-documents-batch)
-- [Sign any file (detached CAdES / .p7s)](#sign-any-file-detached-cades--p7s)
+- [Sign any file (detached CAdES / .p7s)](#sign-any-file-detached-cades-p7s)
 - [Sign multiple files (batch)](#sign-multiple-files-batch)
 - [Common signing options](#common-signing-options)
   - [Non-interactive PIN](#non-interactive-pin)
   - [Native signing (no PKCS#11 middleware)](#native-signing-no-pkcs11-middleware)
   - [Timestamping (TSA, optional)](#timestamping-tsa-optional)
-  - [Signing sanity check (`--verify`) vs full verification](#signing-sanity-check---verify-vs-full-verification)
+  - [Signing sanity check (`--verify`) vs full verification](#signing-sanity-check-verify-vs-full-verification)
 - [Verify a signed file (auto-detect)](#verify-a-signed-file-auto-detect)
 - [Verify a signed XML](#verify-a-signed-xml)
 - [Common verification options and output](#common-verification-options-and-output)
@@ -41,7 +41,7 @@ Step-by-step usage for every `firmauy` command (the CLI is invoked as `firmauy`)
 - [Diagnose your setup (doctor)](#diagnose-your-setup-doctor)
 - [Read biographical data from the card](#read-biographical-data-from-the-card)
 - [Read the cardholder's photo](#read-the-cardholders-photo)
-- [Validate a cédula number (check digit)](#validate-a-cédula-number-check-digit)
+- [Validate a cédula number (check digit)](#validate-a-cedula-number-check-digit)
 
 ## CLI help
 
@@ -719,7 +719,7 @@ The `signer` and `issuer` fields are structured:
 
 On a hard error (e.g. malformed input), stdout is
 `{"schema_version": 2, "ok": false, "error_code": "...", "error": "..."}` and the exit code is `1`.
-The codes are the ones listed under [JSON output](#json-output---json) for signing.
+The codes are the ones listed under [JSON output](#json-output-json) for signing.
 
 **The timestamp block.** `timestamp` is `null` when the signature carries none, which is the
 common case: the standard cédula flow signs at the BES level. When there is one it is an object,
@@ -907,7 +907,7 @@ on open standards (XMLDSig / XAdES, PAdES, CMS / CAdES, X.509 path validation pe
 CRL/OCSP), anchored to the Uruguayan national root.
 
 - This is a **technical** check, **not** the official validator. For official validation, use
-  [firma.gub.uy](https://firma.gub.uy/) (see the [disclaimer](../README.md#legal-and-compliance)).
+  [firma.gub.uy](https://firma.gub.uy/) (see the [disclaimer](https://github.com/carlosplanchon/firmauy/blob/main/README.md#legal-and-compliance)).
 - On the decisive questions (integrity, cryptographic validity, chain to the national root,
   revocation) the result should agree with any standards-conformant validator, because it follows
   the same standards and the same PKI, not because it reproduces any specific tool.

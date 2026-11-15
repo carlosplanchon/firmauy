@@ -72,13 +72,13 @@ Each line below says which of the two it came from, because checking against one
 will report the other's fields as missing. Control texts are the catalogue's, levels are the
 guide's, and the law at the end is IMPO's.
 
-The check is repeatable: [`scripts/check_mcu_quotes.py`](../scripts/check_mcu_quotes.py) fetches
+The check is repeatable: [`scripts/check_mcu_quotes.py`](https://github.com/carlosplanchon/firmauy/blob/main/scripts/check_mcu_quotes.py) fetches
 the artifacts fresh, prints the SHA-256 of each so "checked" means "against these bytes", and
 re-checks every quotation and level annotation below against the artifact its line declares. A
 checker and not a generator, on purpose: when it fails, the next step is a person reading what
 the source now says, never a script rewriting this page. The chain's other direction is hermetic
 and runs with the suite on every pull request:
-[`tests/test_invariants_doc.py`](../tests/test_invariants_doc.py) fails when a test named on this
+[`tests/test_invariants_doc.py`](https://github.com/carlosplanchon/firmauy/blob/main/tests/test_invariants_doc.py) fails when a test named on this
 page stops existing where the page says it lives, when an internal anchor or relative link
 breaks, or when the matrix cites a clause label, gap or counterexample the page does not define.
 
@@ -165,11 +165,11 @@ All named tests run in CI with the normal suite (`uv run pytest`), which include
 at their shallow profile, on every pull request and every push to main. The sweep and the deep
 property profile run on the same trigger in their own job, and locally with `FIRMAUY_SWEEP=1`
 and `FIRMAUY_DEEP=1`. Counterexample numbers (C1 to C7) refer to the section below. Unless a file
-is named, tests live in [`tests/test_timestamp_status.py`](../tests/test_timestamp_status.py);
-the others are [`test_xades_t.py`](../tests/test_xades_t.py),
-[`test_properties_timestamp.py`](../tests/test_properties_timestamp.py) and
-[`test_sweep_tstinfo.py`](../tests/test_sweep_tstinfo.py), and the job that runs them is in
-[`ci.yml`](../.github/workflows/ci.yml). Files rather than line numbers on purpose: a link to a
+is named, tests live in [`tests/test_timestamp_status.py`](https://github.com/carlosplanchon/firmauy/blob/main/tests/test_timestamp_status.py);
+the others are [`test_xades_t.py`](https://github.com/carlosplanchon/firmauy/blob/main/tests/test_xades_t.py),
+[`test_properties_timestamp.py`](https://github.com/carlosplanchon/firmauy/blob/main/tests/test_properties_timestamp.py) and
+[`test_sweep_tstinfo.py`](https://github.com/carlosplanchon/firmauy/blob/main/tests/test_sweep_tstinfo.py), and the job that runs them is in
+[`ci.yml`](https://github.com/carlosplanchon/firmauy/blob/main/.github/workflows/ci.yml). Files rather than line numbers on purpose: a link to a
 line is wrong the first time somebody edits above it, and a stale link in a page like this is
 worse than none. The test names are exact, so `pytest -k` finds any of them.
 
@@ -381,12 +381,12 @@ signatures that aged into revocation. No single signer holds all of that. And a 
 signed documents cannot be collected at all, because a signature file carries the signer's name,
 their document number and their certificate. What can be collected is verdicts.
 
-**A row, not a document.** [`scripts/conformance_row.py`](../scripts/conformance_row.py) verifies
+**A row, not a document.** [`scripts/conformance_row.py`](https://github.com/carlosplanchon/firmauy/blob/main/scripts/conformance_row.py) verifies
 a signed file locally, extracts only what identifies the infrastructure, and prints one markdown
 row. A row may never contain the signer's name, their document number, the certificate serial,
 or the file's name. The script enforces that mechanically, refusing to print a row that carries
 any signer field the verifier saw, and
-[`tests/test_conformance_row.py`](../tests/test_conformance_row.py) holds the refusal in place
+[`tests/test_conformance_row.py`](https://github.com/carlosplanchon/firmauy/blob/main/tests/test_conformance_row.py) holds the refusal in place
 with a fixture that contains a fake document number, so its absence from the output means the
 redaction ran rather than that there was nothing to redact. What a row does carry is public:
 the issuing CA's name, which CRL the certificate points at, the algorithm, the TSA's name, the

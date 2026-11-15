@@ -19,6 +19,33 @@ uv run firmauy --help
 
 The package source lives under `src/firmauy/`; tests under `tests/`.
 
+## Documentation site
+
+The documentation is built with [Zensical](https://zensical.org/). Spanish is the default site and
+English is an `/en/` mirror. The two builds share the same content sources: `docs-es/` for Spanish
+and `docs/` for English.
+
+```bash
+# Install the pinned generator (the workflow uses the same version)
+pip install zensical==0.0.45
+
+# Spanish, the default: builds into site/
+zensical build --clean
+
+# English: builds into site/en/
+zensical build -f zensical.en.toml
+
+# Local preview
+zensical serve
+```
+
+Run both builds before opening a documentation pull request. Zensical validates internal links and
+anchors; a clean build reports `No issues found`. The GitHub Actions workflow in
+`.github/workflows/docs.yml` publishes `site/` to GitHub Pages.
+
+When you add a page, add it to the navigation in `zensical.toml` and `zensical.en.toml`, and provide
+the counterpart in the other language. Keep the two trees in sync.
+
 ## Developing without the real card (SoftHSM2)
 
 Entering the wrong PIN too many times **blocks the cédula**, so you should not develop against the real card. Instead, you can run the full signing pipeline against a software PKCS#11 token (SoftHSM2) that mimics a cédula closely enough to exercise token discovery, certificate selection, PIN handling and signing.

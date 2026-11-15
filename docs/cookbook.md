@@ -1,6 +1,6 @@
 # FirmaUY cookbook
 
-Practical, copy-pasteable recipes for real workflows. The [README](../README.md) explains **what**
+Practical, copy-pasteable recipes for real workflows. The [README](https://github.com/carlosplanchon/firmauy/blob/main/README.md) explains **what**
 each command does; this cookbook shows **how** to combine them in everyday use, automation and
 debugging.
 
@@ -17,7 +17,7 @@ debugging.
 - [Basics](#basics)
 - [Signing (all formats)](#signing-all-formats)
 - [Verification and audit](#verification-and-audit)
-- [Cédula numbers (check digit, no card)](#cédula-numbers-check-digit-no-card)
+- [Cédula numbers (check digit, no card)](#cedula-numbers-check-digit-no-card)
 - [Privacy and debugging](#privacy-and-debugging)
 - [The cardholder's photo](#the-cardholders-photo)
 - [Automation](#automation)
@@ -274,7 +274,7 @@ firmauy sign-pdf documento.pdf --pin-source fd --pin-fd 3 3< pin.txt
 ```
 
 `pin.txt` holds your PIN: keep it out of version control and delete it when done. See the
-[PIN sources](../README.md#non-interactive-pin) table for the trade-offs between `prompt`, `fd`,
+[PIN sources](https://github.com/carlosplanchon/firmauy/blob/main/README.md#non-interactive-pin) table for the trade-offs between `prompt`, `fd`,
 `stdin` and `env`.
 
 > ⚠️ **A wrong PIN in automation can lock the cédula.** Each incorrect attempt counts toward the
@@ -335,4 +335,4 @@ expected output, any privacy notes, and the environment where it was tested.
 
 Please do not include real names, document numbers, MRZ data, certificates, photos or unredacted
 verification output. Use `--redact` whenever a recipe shares command output. See
-[Contributing](../README.md#contributing--reporting-issues).
+[Contributing](https://github.com/carlosplanchon/firmauy/blob/main/README.md#contributing--reporting-issues).

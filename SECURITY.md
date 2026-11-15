@@ -4,6 +4,10 @@ FirmaUY signs documents with the Uruguayan national ID card and handles the card
 reports are taken seriously, within the limits of a community project. Thank you for reporting
 responsibly.
 
+For the design behind these limits, including how the private key stays on the card, how the PIN
+and retry counter are protected, and which threats are out of scope, read
+[Security and key handling](docs/security.md).
+
 ## Reporting a vulnerability
 
 Please do **not** open a public issue or pull request for a security problem.

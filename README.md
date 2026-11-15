@@ -234,6 +234,7 @@ is documented in **[docs/api.md](docs/api.md)**.
 ## Documentation
 
 - **[Usage guide](docs/usage.md)**: step-by-step examples for every command.
+- **[Security and key handling](docs/security.md)**: how the key stays on the card, how the PIN is protected, how trust and outbound requests are bounded, and which threats are out of scope.
 - **[Cookbook](docs/cookbook.md)**: task-oriented recipes for signing, verifying, privacy, automation and `jq` pipelines.
 - **[Trust anchors](docs/trust-anchors.md)**: the bundled national CA certificates, how trust is pinned and refreshed, and the state of revocation.
 - **[Card protocol reference](docs/card-protocol.md)**: the cédula's data model and the APDU-level signing protocol behind `--native` (native, PKCS#11-free signing).
@@ -244,6 +245,7 @@ is documented in **[docs/api.md](docs/api.md)**.
 
 ## Security considerations
 
+- Read [Security and key handling](docs/security.md) for the controls behind the points below.
 - Never pass the PIN directly as a command-line argument.
 - Prefer interactive PIN entry for manual use.
 - From Python, prefer `pin_provider` over holding the PIN in a variable: it is requested only once
